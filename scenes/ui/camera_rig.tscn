@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/camera_rig.gd" id="1_rig"]
+[ext_resource type="Script" path="res://scripts/starfield.gd" id="2_stars"]
+
+[node name="CameraRig" type="Node3D"]
+script = ExtResource("1_rig")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+current = true
+fov = 84.0
+near = 0.15
+far = 12000.0
+
+[node name="Starfield" type="Node3D" parent="."]
+script = ExtResource("2_stars")

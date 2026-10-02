@@ -1,0 +1,14 @@
+# Godot 4 editor cache and generated import metadata.
+#
+# `.uid` files ARE tracked: Godot 4.4+ uses them to keep script and resource
+# references stable across checkouts, so they are part of the project.
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+
+# Screenshot output from tools/capture.gd
+captures/
+
+# macOS
+.DS_Store

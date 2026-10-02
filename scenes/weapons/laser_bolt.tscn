@@ -1,0 +1,28 @@
+[gd_scene load_steps=4 format=3]
+
+; Visible tracer only — the bolt's own collision is a per-frame raycast, so it
+; deliberately has no CollisionShape3D and therefore no physics body.
+
+[ext_resource type="Script" path="res://scripts/laser_bolt.gd" id="1_bolt"]
+
+[sub_resource type="BoxMesh" id="MeshTracer"]
+size = Vector3(1, 1, 1)
+
+[sub_resource type="StandardMaterial3D" id="MatTracer"]
+shading_mode = 0
+transparency = 1
+blend_mode = 1
+albedo_color = Color(1, 0.7, 0.3, 1)
+emission_enabled = true
+emission = Color(1, 0.65, 0.25, 1)
+emission_energy_multiplier = 7.0
+
+[node name="LaserBolt" type="Node3D"]
+collision_layer = 4
+collision_mask = 11
+script = ExtResource("1_bolt")
+
+[node name="Tracer" type="MeshInstance3D" parent="."]
+cast_shadow = 0
+material_override = SubResource("MatTracer")
+mesh = SubResource("MeshTracer")
