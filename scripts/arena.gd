@@ -202,7 +202,7 @@ func _configure_sun() -> void:
 		add_child(_sun)
 	_sun.rotation = Vector3(deg_to_rad(-38.0), deg_to_rad(41.0), 0.0)
 	_sun.light_color = Color(1.0, 0.95, 0.88)
-	_sun.light_energy = 2.6
+	_sun.light_energy = 1.8
 	_sun.shadow_enabled = true
 	_sun.directional_shadow_max_distance = 900.0
 	_sun.shadow_bias = 0.04
@@ -214,7 +214,7 @@ func _configure_sun() -> void:
 		add_child(fill)
 	fill.rotation = Vector3(deg_to_rad(24.0), deg_to_rad(-135.0), 0.0)
 	fill.light_color = Color(0.42, 0.55, 1.0)
-	fill.light_energy = 0.9
+	fill.light_energy = 0.5
 	fill.shadow_enabled = false
 
 
@@ -228,7 +228,7 @@ func danger_level() -> float:
 		var ship := node as SpaceShip
 		if ship == null or ship.dead:
 			continue
-		var d := Vector3(ship.global_position.x, 0.0, ship.global_position.z).length()
+		var d := ship.global_position.length()
 		worst = maxf(worst, clampf((d - limit) / GameConfig.ARENA_MARGIN, 0.0, 1.0))
 	return worst
 

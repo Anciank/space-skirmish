@@ -45,6 +45,8 @@ const SHIELD_REGEN_RATE := 22.0
 const SPEED_CRUISE := 95.0
 const SPEED_BOOST := 235.0
 const THRUST_MAIN := 78.0
+## Additional forward acceleration while the afterburner is engaged.
+const THRUST_AFTERBURNER := 150.0
 const THRUST_REVERSE := 42.0
 const THRUST_LATERAL := 46.0
 const THRUST_VERTICAL := 36.0
@@ -101,6 +103,7 @@ const AI_BURST_LEN := 0.85
 ## still hurt — hull never regenerates, so RETREAT has to be time-boxed.
 const AI_RETREAT_DURATION := 7.0
 const AI_DODGE_CHANCE := 0.42
+## Remaining hull percentage with shields depleted; full shields defer panic.
 const AI_PANIC_HULL := 34.0
 
 # ---------------------------------------------------------------- match ---
@@ -120,6 +123,16 @@ static func team_name(team: int) -> String:
 
 static func is_enemy(a: int, b: int) -> bool:
 	return a != b
+
+
+static func effects_parent(source: Node) -> Node:
+	var cursor := source
+	while cursor != null:
+		if cursor.has_node("Effects"):
+			return cursor.get_node("Effects")
+		cursor = cursor.get_parent()
+	var scene := source.get_tree().current_scene
+	return scene if scene != null else source.get_tree().root
 
 
 ## Evenly spread spawn points on a shell inside the arena, biased away from the

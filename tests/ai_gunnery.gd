@@ -1,5 +1,6 @@
 extends Node3D
-## Focused AI gunnery test: one pilot, one stationary hostile, nothing else in
+## Focused AI gunnery test: one pilot, a stationary and then crossing hostile,
+## with no scenery in
 ## the scene. Isolating the duel makes aim and lead bugs obvious instead of
 ## hiding behind a live five-ship dogfight.
 ##
@@ -15,7 +16,9 @@ var _ai: AIShip
 var _dummy: SpaceShip
 var _effects: Node3D
 var _failures := 0
-var _traced := 0
+var _checks := 0
+var _moving := false
+var _fired := 0
 var _total_damage := 0.0
 
 
@@ -37,6 +40,7 @@ func _ready() -> void:
 
 	_ai = AI_SCENE.instantiate()
 	ships.add_child(_ai)
+	_ai.weapon_fired.connect(func(): _fired += 1)
 	_ai.respawn_at(Vector3.ZERO, Vector3(0, 0, -DISTANCE))
 
 	# Force the duel: no target auto-acquisition, no random patrol waypoints.
@@ -46,6 +50,7 @@ func _ready() -> void:
 
 
 func _check(label: String, ok: bool, detail := "") -> void:
+	_checks += 1
 	if not ok:
 		_failures += 1
 	print("  %s  %s %s" % ["PASS" if ok else "FAIL", label, detail])
@@ -67,11 +72,13 @@ func _run() -> void:
 	var max_range := 0.0
 	var lowest_shield := _dummy.shield_max
 	var frames_in_band := 0
+	var frames_run := 0
 	# Time spent in each AI state, so "why is it out at 320 m" is answerable.
 	var state_frames := {0: 0, 1: 0, 2: 0, 3: 0}
 
 	for i in FRAMES:
 		await get_tree().physics_frame
+		frames_run += 1
 		var muzzle: Node3D = _ai.muzzle_points[0]
 		var to_target: Vector3 = (_dummy.global_position - muzzle.global_position).normalized()
 		var ang := rad_to_deg(_ai.forward().angle_to(to_target))
@@ -90,14 +97,14 @@ func _run() -> void:
 			print("    t=%4.1fs  range=%6.1f m  nose=%5.1f deg  speed=%5.1f  state=%d  dmg=%3.0f" % [
 				i / 60.0, range_m, ang, _ai.velocity.length(), _ai.state, _total_damage,
 			])
-		# When the AI thinks it is firing, trace a hypothetical bolt so we can see
-		# exactly what it would hit.
+		if _dummy.dead:
+			break
 
 
 	_check("ai kept its target", _ai.target == _dummy or _dummy.dead)
 	_check("ai never flew into its target", min_range > 40.0,
 		"(closest %.0f m)" % min_range)
-	var band_pct := 100.0 * frames_in_band / float(FRAMES)
+	var band_pct := 100.0 * frames_in_band / float(frames_run)
 	_check("ai spends most of the fight at fighting range", band_pct > 35.0,
 		("(%.0f%% of the time between %d-%d m)" % [band_pct,
 			GameConfig.AI_ENGAGE_BAND_MIN, int(GameConfig.AI_ENGAGE_BAND_MAX * 1.35)]))
@@ -113,7 +120,7 @@ func _run() -> void:
 	var names := {0: "PATROL", 1: "ENGAGE", 2: "EVADE", 3: "RETREAT"}
 	for s: int in [0, 1, 2, 3]:
 		print("    state %-8s %5.1f%% of the fight" % [names[s],
-			100.0 * int(state_frames.get(s, 0)) / float(FRAMES)])
+			100.0 * int(state_frames.get(s, 0)) / float(frames_run)])
 	_check("ai is not drifting away from its target", radial < 25.0,
 		("(radial drift %+.1f m/s)" % radial))
 	_check("ai pointed its nose at the target", min_angle < 20.0,
@@ -124,6 +131,123 @@ func _run() -> void:
 	_check("sustained fire strips shields", lowest_shield < _dummy.shield_max,
 		"(shield dipped to %.0f)" % lowest_shield)
 
+	await _moving_regressions()
+	_retreat_regressions()
 	print("")
-	print("--- %d failures ---" % _failures)
+	print("--- AI gunnery: %d checks, %d failures ---" % [_checks, _failures])
+	for child in get_children():
+		child.queue_free()
+	await get_tree().process_frame
+	await Sfx.finish_audio()
 	get_tree().quit(1 if _failures > 0 else 0)
+
+
+func _moving_regressions() -> void:
+	_ai.set_physics_process(false)
+	_dummy.set_physics_process(false)
+	for child in _effects.get_children():
+		child.queue_free()
+	await get_tree().process_frame
+	_ai.respawn_at(Vector3.ZERO, Vector3.FORWARD * DISTANCE)
+	_dummy.respawn_at(Vector3(80, 40, -200), Vector3.ZERO)
+	_ai.target = _dummy
+	_ai.state = AIShip.State.ENGAGE
+	_ai.skill = 1.0
+	_ai._aim_noise = Vector3.ZERO
+	_ai._roll_bias = 0.35
+	_ai._apply_steering(1.0)
+	_check("banking preserves the nose's firing direction", _ai.forward().dot((_dummy.global_position - _ai.global_position).normalized()) > 0.9999)
+	_ai.global_basis = Basis.IDENTITY
+	_ai._roll_bias = 0.0
+	_dummy.global_position = Vector3(300, 0, 0)
+	_ai._apply_steering(0.02)
+	var turn := Vector3.FORWARD.angle_to(_ai.forward())
+	var expected := GameConfig.AI_TURN_RATE * 0.02
+	_check("turn speed is bounded in radians per second", absf(turn - expected) < 0.0001)
+	_dummy.global_position = Vector3(0, 0, -180)
+	_dummy.velocity = Vector3.RIGHT * 80.0
+	_ai.global_basis = Basis.IDENTITY
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	_ai.look_at(_ai._predicted_aim_point())
+	_ai._burst_len = 0.8
+	_ai._burst_timer = 0.0
+	_ai._fire_timer = 0.0
+	var before := _fired
+	var angle := rad_to_deg(_ai.forward().angle_to((_dummy.global_position - _ai.global_position).normalized()))
+	_ai._apply_weapons(1.0 / 60.0)
+	_check("a crossing target can fire when the nose tracks its lead", _fired > before and angle > GameConfig.AI_FIRE_CONE_DEG + 1.0)
+	_dummy.global_position = Vector3.FORWARD * (GameConfig.BOLT_SPEED * GameConfig.BOLT_LIFETIME + 500.0)
+	_dummy.velocity = Vector3.ZERO
+	_ai.look_at(_ai._predicted_aim_point())
+	_ai._burst_len = 0.8
+	_ai._burst_timer = 0.0
+	_ai._fire_timer = 0.0
+	before = _fired
+	_ai._apply_weapons(1.0 / 60.0)
+	_check("AI conserves fire when bolts cannot reach the target", _fired == before)
+	for child in _effects.get_children():
+		child.queue_free()
+	await get_tree().process_frame
+	_dummy.respawn_at(Vector3(0, 0, -180), Vector3.ZERO)
+	_ai.respawn_at(Vector3.ZERO, Vector3.FORWARD * 180.0)
+	_ai.target = _dummy
+	_ai.state = AIShip.State.ENGAGE
+	_ai.weapon_spread_deg = 0.0
+	_ai._burst_len = 0.8
+	_ai._burst_timer = 0.0
+	_ai._burst_gap = 0.0
+	_total_damage = 0.0
+	_moving = true
+	for _i in 240:
+		await get_tree().physics_frame
+	_moving = false
+	_check("real bolts intercept a target crossing at 80 m/s", _total_damage >= 18.0, "(%.0f damage)" % _total_damage)
+
+
+func _physics_process(delta: float) -> void:
+	if not _moving:
+		return
+	_dummy.velocity = Vector3.RIGHT * 80.0
+	_dummy.move_and_slide()
+	_ai._update_weapon(delta)
+	_ai.look_at(_ai._predicted_aim_point())
+	_ai._apply_weapons(delta)
+
+
+func _retreat_regressions() -> void:
+	_ai.respawn_at(Vector3.ZERO, Vector3.FORWARD * DISTANCE)
+	_dummy.respawn_at(Vector3.FORWARD * DISTANCE, Vector3.ZERO)
+	_ai.target = _dummy
+	_ai._rng.seed = 0xA11
+	_ai.state = AIShip.State.ENGAGE
+	_ai.shield = 0.0
+	_ai.hull = 68.0
+	_ai._think()
+	_check("a pilot with 68 percent hull stays in the fight", _ai.state != AIShip.State.RETREAT)
+	_ai.hull = GameConfig.AI_PANIC_HULL - 1.0
+	_ai._think()
+	var away := (_ai.global_position - _dummy.global_position).normalized()
+	_check("critical hull immediately commands a boosted breakaway", _ai.state == AIShip.State.RETREAT and _ai.wants_boost and _ai._desired_dir.dot(away) > 0.999 and _ai._retreat_timer > 0.0)
+	var held_retreat := true
+	for _i in 100:
+		_ai._think()
+		held_retreat = held_retreat and _ai.state == AIShip.State.RETREAT
+	_check("retreat remains stable until shield recovery or timeout", held_retreat)
+	_ai.shield = 20.0
+	_ai._think()
+	_check("recovered shields let a damaged pilot rejoin combat", _ai.state != AIShip.State.RETREAT and not _ai.wants_boost)
+	_ai.state = AIShip.State.RETREAT
+	_ai.shield = 0.0
+	_ai._retreat_timer = 0.0
+	_ai._think()
+	_check("an unrecovered retreat still respects its time limit", _ai.state != AIShip.State.RETREAT)
+	_ai.hull_max = 200.0
+	_ai.shield_max = 50.0
+	_ai.hull = 70.0
+	_ai.state = AIShip.State.ENGAGE
+	_ai._think()
+	var stayed := _ai.state != AIShip.State.RETREAT
+	_ai.hull = 66.0
+	_ai._think()
+	_check("panic follows hull percentage with unequal shield capacity", stayed and _ai.state == AIShip.State.RETREAT)

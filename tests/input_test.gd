@@ -26,6 +26,7 @@ const KEY_BINDINGS := {
 	"toggle_camera": KEY_V,
 	"pause": KEY_ESCAPE,
 	"restart": KEY_F5,
+	"scoreboard": KEY_BACKSLASH,
 }
 
 var _failures := 0
@@ -35,6 +36,7 @@ var _main: Node3D
 
 func _ready() -> void:
 	_main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	_main.start_in_menu = false
 	add_child(_main)
 	await get_tree().physics_frame
 	_run()
@@ -104,7 +106,7 @@ func _run() -> void:
 	# Confirm the action is genuinely pressed *while* the key is held. This is the
 	# check that fails when the action exists but has no events bound to it.
 	_section("actions report pressed while held")
-	for action: String in ["thrust_forward", "thrust_back", "fire", "boost", "dampeners"]:
+	for action: String in ["thrust_forward", "thrust_back", "fire", "boost", "dampeners", "scoreboard"]:
 		await _press(action, KEY_BINDINGS[action])
 		var pressed := _held(action)
 		var strength := Input.get_action_strength(action)
@@ -175,12 +177,12 @@ func _run() -> void:
 	_check("E rolls the hull", absf(p.roll - roll_before) > 0.05,
 		"(%.3f -> %.3f rad)" % [roll_before, p.roll])
 
-	var bolts_before := get_tree().get_nodes_in_group("bolts").size()
+	var shots_before: int = GameMatch.pilots.YOU.shots
 	await _press("fire", KEY_SPACE, 12)
 	await _release("fire", KEY_SPACE)
 	_check("SPACE fires the autocannon",
-		get_tree().get_nodes_in_group("bolts").size() > bolts_before,
-		"(%d -> %d)" % [bolts_before, get_tree().get_nodes_in_group("bolts").size()])
+		GameMatch.pilots.YOU.shots > shots_before,
+		"(shots %d -> %d)" % [shots_before, GameMatch.pilots.YOU.shots])
 
 	await _press("boost", KEY_SHIFT, 4)
 	await _press("thrust_forward", KEY_W, 70)
@@ -201,15 +203,10 @@ func _run() -> void:
 	if paused_ok:
 		await _release("pause", KEY_ESCAPE)
 		await _step(2)
-		# Press again to unpause. Deliberately use _set_paused() rather than a
-		# second key event: while the tree is paused the node that would handle
-		# the release has had unhandled-input processing disabled, so the second
-		# event never reaches it and the test would hang rather than verify
-		# anything. Resuming is what _set_paused() does; the key path is already
-		# covered by the "ESC pauses" check above.
-		_main._set_paused(false)
+		# Exercise the actual release-and-second-press path while the tree is paused.
+		await _tap("pause", KEY_ESCAPE)
 		await _step(6)
-		_check("pause clears", not _main.paused, "(paused=%s)" % str(_main.paused))
+		_check("second ESC resumes through real input", not _main.paused, "(paused=%s)" % str(_main.paused))
 		_check("physics resumes with the tree",
 			get_tree().paused == false, "(tree paused=%s)" % str(get_tree().paused))
 	else:
@@ -217,6 +214,10 @@ func _run() -> void:
 
 	print("")
 	print("--- %d checks, %d failures ---" % [_checks, _failures])
+	_main._show_title()
+	_main.queue_free()
+	await get_tree().process_frame
+	await Sfx.finish_audio()
 	get_tree().quit(1 if _failures > 0 else 0)
 
 

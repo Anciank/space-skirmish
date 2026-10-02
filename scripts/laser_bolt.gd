@@ -20,6 +20,7 @@ var radius := GameConfig.BOLT_RADIUS
 
 var _age := 0.0
 var _mesh: MeshInstance3D
+var _credit: Dictionary = {}
 
 
 func _ready() -> void:
@@ -27,7 +28,7 @@ func _ready() -> void:
 	_mesh = get_node_or_null("Tracer") as MeshInstance3D
 	if _mesh != null:
 		# Stretch the tracer along its flight axis.
-		_mesh.scale = Vector3(radius * 1.5, radius * 1.5, radius * 30.0)
+		_mesh.scale = Vector3(radius * 0.55, radius * 0.55, radius * 23.0)
 		_apply_look()
 
 
@@ -36,6 +37,8 @@ func _ready() -> void:
 ## orientation in sync with the actual shot.
 func launch(origin: Vector3, direction: Vector3, shooter: Node, dmg: float, life: float, tint: Color) -> void:
 	attacker = shooter
+	if shooter is SpaceShip:
+		_credit = {"name": (shooter as SpaceShip).display_name, "team": (shooter as SpaceShip).team}
 	damage = dmg
 	lifetime = life
 	bolt_color = tint
@@ -68,6 +71,8 @@ func _physics_process(delta: float) -> void:
 	var query := PhysicsRayQueryParameters3D.create(from, to, HIT_MASK)
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
+	if is_instance_valid(attacker) and attacker is CollisionObject3D:
+		query.exclude = [(attacker as CollisionObject3D).get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 
 	if hit.is_empty():
@@ -81,10 +86,19 @@ func _physics_process(delta: float) -> void:
 
 
 func _impact(point: Vector3, normal: Vector3, collider: Object) -> void:
-	_spawn_flash(point, normal, bolt_color)
+	if not collider is Asteroid:
+		var tint := bolt_color
+		if collider is SpaceShip:
+			tint = Color("99ddff") if (collider as SpaceShip).shield > 0.0 else Color("ffc071")
+		_spawn_flash(point, normal, tint)
 	if collider != null and collider.has_method("take_damage"):
 		# A small kick along the shot so hits feel like they land.
-		collider.take_damage(damage, attacker, point, velocity.normalized() * damage * 0.35)
+		var source: Node = attacker if is_instance_valid(attacker) else null
+		var kick := velocity.normalized() * damage * 0.35
+		if collider is SpaceShip:
+			(collider as SpaceShip).take_damage(damage, source, point, kick, _credit)
+		else:
+			collider.take_damage(damage, source, point, kick)
 	queue_free()
 
 

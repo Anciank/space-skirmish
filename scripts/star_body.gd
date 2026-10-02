@@ -27,7 +27,7 @@ var _orbit_angle := 0.0
 var _orbit_axis := Vector3.UP
 var _surface: MeshInstance3D
 var _atmosphere: MeshInstance3D
-var _glow: OmniLight3D
+const ATMOSPHERE_SHADER := preload("res://shaders/atmosphere.gdshader")
 
 
 func _ready() -> void:
@@ -90,48 +90,36 @@ func _build_visual() -> void:
 		_surface = MeshInstance3D.new()
 		_surface.name = "Surface"
 		add_child(_surface)
-	_surface.mesh = MeshFactory.make_rock(radius, body_seed, body_kind)
+	_surface.mesh = MeshFactory.make_rock(radius, body_seed, body_kind + 1)
 
 	var base: Color
 	if body_kind == 0:
 		base = Color.from_hsv(0.58, 0.14, 0.52).lerp(Color(0.62, 0.60, 0.58), _rng.randf() * 0.6)
 	else:
 		base = Color.from_hsv(0.06 + _rng.randf() * 0.06, 0.30 + _rng.randf() * 0.2, 0.44 + _rng.randf() * 0.18)
-	var mat := MeshFactory.make_rock_material(base, body_seed)
-	mat.roughness = 0.88
-	if body_kind == 1:
-		mat.emission_enabled = true
-		mat.emission = Color(0.9, 0.42, 0.12)
-		mat.emission_energy_multiplier = 0.06
+	var mat := MeshFactory.make_rock_material(base, body_seed, radius, body_kind + 1)
 	_surface.material_override = mat
 
-	# Thin additive shell reads as an atmosphere / corona.
+	# Planets have a thin limb; airless moons retain a clean silhouette.
+	if body_kind == 0:
+		return
 	_atmosphere = get_node_or_null("Atmosphere") as MeshInstance3D
 	if _atmosphere == null:
 		_atmosphere = MeshInstance3D.new()
 		_atmosphere.name = "Atmosphere"
 		add_child(_atmosphere)
 	var shell := SphereMesh.new()
-	shell.radius = radius * 1.10
-	shell.height = radius * 2.2
-	shell.radial_segments = 28
-	shell.rings = 14
+	shell.radius = radius * 1.025
+	shell.height = radius * 2.05
+	shell.radial_segments = 64
+	shell.rings = 32
 	_atmosphere.mesh = shell
-	var glow := Color(0.45, 0.70, 1.0) if body_kind == 0 else Color(1.0, 0.58, 0.28)
-	var amat := MeshFactory.make_glow_material(glow, 0.9)
-	amat.albedo_color = Color(glow.r, glow.g, glow.b, 0.32)
-	_atmosphere.mesh.material = amat
+	var amat := ShaderMaterial.new()
+	amat.shader = ATMOSPHERE_SHADER
+	amat.set_shader_parameter("tint", Color(0.56, 0.67, 0.8))
+	_atmosphere.material_override = amat
 	_atmosphere.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-	_glow = get_node_or_null("GlowLight") as OmniLight3D
-	if _glow == null:
-		_glow = OmniLight3D.new()
-		_glow.name = "GlowLight"
-		add_child(_glow)
-	_glow.light_color = glow
-	_glow.light_energy = 0.9 if body_kind == 0 else 0.5
-	_glow.omni_range = radius * 4.0
-	_glow.shadow_enabled = false
 
 
 ## Solid bodies bounce ships rather than letting them tunnel into the surface.

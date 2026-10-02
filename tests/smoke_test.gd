@@ -18,6 +18,7 @@ var _checks := 0
 func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn")
 	_main = packed.instantiate()
+	_main.start_in_menu = false
 	add_child(_main)
 	# One physics frame so every _ready() has run before we poke at anything.
 	await get_tree().physics_frame
@@ -64,6 +65,10 @@ func _run() -> void:
 
 	print("")
 	print("--- %d checks, %d failures ---" % [_checks, _failures])
+	_main._show_title()
+	_main.queue_free()
+	await get_tree().process_frame
+	await Sfx.finish_audio()
 	get_tree().quit(1 if _failures > 0 else 0)
 
 

@@ -25,6 +25,7 @@ const KEYS := {
 	"toggle_mouse": [KEY_M],
 	"pause": [KEY_ESCAPE, KEY_P],
 	"restart": [KEY_F5],
+	"scoreboard": [KEY_BACKSLASH],
 }
 
 ## action name -> [joypad button]
@@ -35,6 +36,7 @@ const PAD_BUTTONS := {
 	"recenter": [JOY_BUTTON_RIGHT_STICK],
 	"dampeners": [JOY_BUTTON_B],
 	"pause": [JOY_BUTTON_START],
+	"scoreboard": [JOY_BUTTON_BACK],
 	"thrust_up": [JOY_BUTTON_DPAD_UP],
 	"thrust_down": [JOY_BUTTON_DPAD_DOWN],
 }
@@ -43,6 +45,10 @@ const PAD_BUTTONS := {
 const PAD_AXES := {
 	"steer_x": [[JOY_AXIS_RIGHT_X, 1.0]],
 	"steer_y": [[JOY_AXIS_RIGHT_Y, 1.0]],
+	"steer_left": [[JOY_AXIS_RIGHT_X, -1.0]],
+	"steer_right": [[JOY_AXIS_RIGHT_X, 1.0]],
+	"steer_up": [[JOY_AXIS_RIGHT_Y, -1.0]],
+	"steer_down": [[JOY_AXIS_RIGHT_Y, 1.0]],
 	"thrust_forward": [[JOY_AXIS_TRIGGER_RIGHT, 1.0]],
 	"thrust_back": [[JOY_AXIS_TRIGGER_LEFT, 1.0]],
 	"thrust_left": [[JOY_AXIS_LEFT_X, -1.0]],
@@ -82,6 +88,9 @@ func _ready() -> void:
 			motion.axis = int(pair[0])
 			motion.axis_value = float(pair[1])
 			InputMap.action_add_event(action, motion)
+	var trigger := InputEventMouseButton.new()
+	trigger.button_index = MOUSE_BUTTON_LEFT
+	InputMap.action_add_event("fire", trigger)
 
 
 ## Creates the action if it does not exist yet.

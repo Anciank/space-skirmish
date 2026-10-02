@@ -41,18 +41,15 @@ func _ready() -> void:
 
 
 func _ensure_shape() -> void:
-	var existing := get_node_or_null("RockShape") as CollisionShape3D
-	if existing != null:
-		# Keep the editor placeholder in sync with the exported radius.
-		if existing.shape is SphereShape3D:
-			(existing.shape as SphereShape3D).radius = radius * 0.86
-		return
-	var shape := CollisionShape3D.new()
-	shape.name = "RockShape"
-	var sphere := SphereShape3D.new()
-	sphere.radius = radius * 0.86
-	shape.shape = sphere
-	add_child(shape)
+	var shape := get_node_or_null("RockShape") as CollisionShape3D
+	if shape == null:
+		shape = CollisionShape3D.new()
+		shape.name = "RockShape"
+		add_child(shape)
+	# Each rock needs its own hull. Mutating the packed scene's shared sphere
+	# gave every rock the radius of the last one built, regardless of its mesh.
+	var visual := get_node("RockMesh") as MeshInstance3D
+	shape.shape = visual.mesh.create_convex_shape(true, false)
 
 
 func _build_visual() -> void:
@@ -65,8 +62,7 @@ func _build_visual() -> void:
 
 	var hue := _rng.randf()
 	var base := Color.from_hsv(0.07 + hue * 0.06, 0.16 + _rng.randf() * 0.12, 0.34 + _rng.randf() * 0.16)
-	var mat := MeshFactory.make_rock_material(base, rock_seed)
-	mat.roughness = 0.95
+	var mat := MeshFactory.make_rock_material(base, rock_seed, radius)
 	mesh.material_override = mat
 
 
@@ -93,11 +89,10 @@ func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO
 	if knockback.length_squared() > 0.0001:
 		apply_central_impulse(knockback * 12.0)
 	if world_pos != Vector3.ZERO:
-		var effects := get_tree().current_scene.get_node_or_null("Effects")
-		if effects != null:
-			var spark := Spark.new()
-			effects.add_child(spark)
-			spark.setup(world_pos, (global_position - world_pos).normalized(), Color(0.75, 0.62, 0.45))
+		var effects := GameConfig.effects_parent(self)
+		var spark := Spark.new()
+		effects.add_child(spark)
+		spark.setup(world_pos, (global_position - world_pos).normalized(), Color(0.75, 0.62, 0.45))
 	if hp <= 0.0:
 		_shatter(attacker)
 
@@ -113,12 +108,10 @@ func _shatter(_attacker: Node) -> void:
 	set_deferred("freeze", true)
 
 	var fx := ExplosionFx.new()
-	var parent := get_tree().current_scene.get_node_or_null("Effects")
-	if parent != null:
-		parent.add_child(fx)
-		fx.global_position = global_position
-		fx.radius = radius * 2.2
-		fx.tint = Color(0.85, 0.62, 0.40)
+	fx.radius = radius * 2.2
+	fx.tint = Color(0.85, 0.62, 0.40)
+	GameConfig.effects_parent(self).add_child(fx)
+	fx.global_position = global_position
 	Sfx.play_at("explosion", global_position, -3.0, randf_range(-0.4, 0.4), 1600.0)
 
 	if respawnable:

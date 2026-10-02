@@ -12,7 +12,7 @@ extends SpaceShip
 @export var auto_level_rate := 3.0
 @export var mouse_sensitivity := 1.0
 
-## Smoothed aim angles (degrees) so the HUD can draw a predictive reticle.
+## Aim angles in radians, matching Basis.get_euler() and Quaternion.from_euler().
 var yaw := 0.0
 var pitch := 0.0
 var roll := 0.0
@@ -23,6 +23,7 @@ var _camera_toggle_requested := false
 var _banking := 0.0
 ## Set by the screenshot harness so captures can show the guns firing.
 var _autofire := false
+var aim_camera: Camera3D
 
 
 func _ready() -> void:
@@ -45,7 +46,18 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func capture_mouse(on: bool) -> void:
 	_mouse_captured = on
+	_look_input = Vector2.ZERO
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if on else Input.MOUSE_MODE_VISIBLE
+
+
+func respawn_at(position: Vector3, look_at_point: Vector3) -> void:
+	super(position, look_at_point)
+	var angles := global_basis.get_euler()
+	pitch = angles.x
+	yaw = angles.y
+	roll = angles.z
+	_look_input = Vector2.ZERO
+	_camera_toggle_requested = false
 
 
 func _physics_process(delta: float) -> void:
@@ -61,39 +73,38 @@ func _physics_process(delta: float) -> void:
 
 func _aim(delta: float) -> void:
 	var pad := Vector2(
-		Input.get_action_strength("steer_x"),
-		Input.get_action_strength("steer_y")
+		Input.get_axis("steer_left", "steer_right"),
+		Input.get_axis("steer_up", "steer_down")
 	)
-	# Mouse delta is in pixels; the pad stick is already 0..1.
-	var turn := Vector2.ZERO
+	# Mouse displacement is already integrated over the frame; only the stick
+	# needs delta. Keeping both in radians avoids frame-rate-dependent steering.
+	var turn := pad * 2.6 * delta
 	if _mouse_captured:
-		turn.x = _look_input.x * look_speed * 60.0
-		turn.y = _look_input.y * look_speed * 60.0
-	if pad.length_squared() > 0.0:
-		turn.x += pad.x * look_speed * 60.0 * 2.6
-		turn.y += pad.y * look_speed * 60.0 * 2.6
+		turn += _look_input * look_speed * float(GameSettings.get_value("mouse_sensitivity"))
+	if bool(GameSettings.get_value("invert_y")):
+		turn.y *= -1.0
 	_look_input = Vector2.ZERO
 
-	yaw = wrapf(yaw - deg_to_rad(turn.x), -180.0, 180.0)
-	pitch = clampf(pitch - deg_to_rad(turn.y), -89.0, 89.0)
+	yaw = wrapf(yaw - turn.x, -PI, PI)
+	pitch = clampf(pitch - turn.y, deg_to_rad(-89.0), deg_to_rad(89.0))
 
 	var roll_cmd := 0.0
 	roll_cmd += Input.get_action_strength("roll_right")
 	roll_cmd -= Input.get_action_strength("roll_left")
 	if Input.is_action_pressed("recenter"):
-		roll = move_toward(roll, 0.0, deg_to_rad(auto_level_rate * 110.0) * delta)
-		pitch = move_toward(pitch, 0.0, deg_to_rad(auto_level_rate * 55.0) * delta)
+		roll = move_toward(roll, 0.0, auto_level_rate * delta)
+		pitch = move_toward(pitch, 0.0, auto_level_rate * 0.5 * delta)
 	else:
-		roll = wrapf(roll + deg_to_rad(roll_cmd * roll_speed * 95.0) * delta, -180.0, 180.0)
+		roll = wrapf(roll + roll_cmd * roll_speed * delta, -PI, PI)
 
-	var q := Quaternion.from_euler(Vector3(deg_to_rad(pitch), deg_to_rad(yaw), deg_to_rad(roll)))
+	var q := Quaternion.from_euler(Vector3(pitch, yaw, roll))
 	var target_basis := Basis(q)
 	var basis_now := global_transform.basis
 	basis_now = basis_now.slerp(target_basis, clampf(delta * 26.0, 0.0, 1.0))
 	global_transform.basis = basis_now.orthonormalized()
 
 	# Smoothed bank value, used by the camera and HUD for readability.
-	_banking = lerpf(_banking, clampf(turn.x * 0.03, -0.6, 0.6), clampf(delta * 5.0, 0.0, 1.0))
+	_banking = lerpf(_banking, clampf(turn.x * 12.0, -0.6, 0.6), clampf(delta * 5.0, 0.0, 1.0))
 
 
 func _read_translation(delta: float) -> void:
@@ -110,6 +121,13 @@ func _read_translation(delta: float) -> void:
 		velocity = velocity.move_toward(Vector3.ZERO, 60.0 * delta)
 
 	if _autofire or Input.is_action_pressed("fire"):
+		if is_instance_valid(aim_camera):
+			var origin := aim_camera.global_position
+			var endpoint := origin - aim_camera.global_basis.z * bolt_speed * GameConfig.BOLT_LIFETIME
+			var ray := PhysicsRayQueryParameters3D.create(origin, endpoint, GameConfig.WEAPON_MASK)
+			ray.exclude = [get_rid()]
+			var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+			aim_point = hit.get("position", endpoint)
 		fire()
 
 

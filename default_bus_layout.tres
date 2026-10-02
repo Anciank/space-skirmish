@@ -1,0 +1,19 @@
+[gd_resource type="AudioBusLayout" load_steps=2 format=3]
+
+[sub_resource type="AudioEffectHardLimiter" id="MasterLimiter"]
+resource_name = "Master ceiling"
+ceiling_db = -1.0
+release = 0.12
+
+[resource]
+bus/0/name = &"Master"
+bus/0/effect/0/effect = SubResource("MasterLimiter")
+bus/0/effect/0/enabled = true
+bus/1/name = &"SFX"
+bus/1/send = &"Master"
+bus/2/name = &"Engine"
+bus/2/send = &"Master"
+bus/3/name = &"Music"
+bus/3/send = &"Master"
+bus/4/name = &"UI"
+bus/4/send = &"Master"

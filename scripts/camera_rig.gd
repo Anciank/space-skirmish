@@ -33,11 +33,20 @@ var _rng := RandomNumberGenerator.new()
 func _ready() -> void:
 	_rng.randomize()
 	_shake_seed = _rng.randf() * 100.0
+	GameSettings.changed.connect(_on_settings_changed)
+	_on_settings_changed("field_of_view")
 	camera.fov = base_fov
+
+
+func _on_settings_changed(_key: String) -> void:
+	base_fov = float(GameSettings.get_value("field_of_view"))
+	boost_fov = minf(base_fov + 16.0, 115.0)
 
 
 func _process(delta: float) -> void:
 	if target == null or not is_instance_valid(target):
+		if stars != null:
+			stars.global_position = camera.global_position
 		return
 
 	var offset := chase_offset if mode_chase else cockpit_offset
@@ -61,24 +70,26 @@ func _process(delta: float) -> void:
 		var fwd := -ship_basis.z
 		var up := ship_basis.y.lerp(Vector3.UP, 0.65)
 		if absf(up.normalized().dot(fwd.normalized())) > 0.985:
-			up = Vector3.UP
+			up = ship_basis.y
 		# Basis.looking_at() aims -Z at the direction we hand it.
 		want_basis = Basis.looking_at(fwd, up)
 	else:
 		want_basis = ship_basis
 	var r: float = clampf(rotation_stiffness * delta, 0.0, 1.0)
-	var blended := global_transform.basis.slerp(want_basis, r)
+	# Fast render rates accumulate rounding error through thousands of tiny
+	# slerps and shake rotations. Restore a pure rotation before interpolation.
+	var blended := global_transform.basis.orthonormalized().slerp(want_basis.orthonormalized(), r)
 
 	# Recoil + explosion shake.
 	_shake = maxf(_shake - delta * 2.4, 0.0)
 	var shake_amt := _shake * 0.55 + target.recoil * 0.9
-	if shake_amt > 0.001:
+	if shake_amt > 0.001 and bool(GameSettings.get_value("camera_shake")):
 		var t2 := float(Time.get_ticks_msec()) * 0.02 + _shake_seed
 		blended = blended.rotated(Vector3.RIGHT, sin(t2 * 1.7) * 0.01 * shake_amt)
 		blended = blended.rotated(Vector3.UP, cos(t2 * 2.3) * 0.01 * shake_amt)
 		blended = blended.rotated(Vector3.BACK, sin(t2 * 3.1) * 0.014 * shake_amt)
 
-	global_transform.basis = blended
+	global_transform.basis = blended.orthonormalized()
 
 	# FOV: boost + speed stretch.
 	var speed_t: float = clampf(target.speed / GameConfig.SPEED_BOOST, 0.0, 1.0)
@@ -132,7 +143,7 @@ func _apply_basis_immediately() -> void:
 		var fwd := -ship_basis.z
 		var up := ship_basis.y.lerp(Vector3.UP, 0.65)
 		if absf(up.normalized().dot(fwd.normalized())) > 0.985:
-			up = Vector3.UP
+			up = ship_basis.y
 		want = Basis.looking_at(fwd, up)
 	else:
 		want = ship_basis

@@ -18,14 +18,6 @@ signal respawned()
 
 const BOLT_SCENE := preload("res://scenes/weapons/laser_bolt.tscn")
 
-const PAINT_PATHS := [
-	"ShipModel/HullSpine",
-	"ShipModel/WingPivotLeft/WingLeft",
-	"ShipModel/WingPivotRight/WingRight",
-	"ShipModel/FinLeft",
-	"ShipModel/FinRight",
-]
-
 @export var team: int = GameConfig.TEAM_BLUE
 @export var display_name: String = "PILOT"
 @export var is_player := false
@@ -79,6 +71,9 @@ var speed := 0.0
 var recoil := 0.0
 
 var last_attacker: Node = null
+var last_damage_pilot := ""
+var last_damage_team := -1
+var last_damage_cause := "HAZARD"
 var last_damage_dir := Vector3.FORWARD
 var last_damage_time := -999.0
 
@@ -94,13 +89,11 @@ var _muzzle_index := 0
 var _gravity := Vector3.ZERO
 var _rng := RandomNumberGenerator.new()
 var _flash_cooldown := 0.0
+var _damage_material: StandardMaterial3D
 
-@onready var model: Node3D = $ShipModel
+@onready var model: ShipVisual = $ShipModel
 @onready var hull_mesh: MeshInstance3D = $ShipModel/HullBody
 @onready var muzzle_points: Array[Node3D] = [$ShipModel/MuzzleLeft, $ShipModel/MuzzleRight]
-@onready var engine_lights: Array[OmniLight3D] = [$ShipModel/EngineLightLeft, $ShipModel/EngineLightRight]
-@onready var engine_glows: Array[MeshInstance3D] = [$ShipModel/EngineGlowLeft, $ShipModel/EngineGlowRight]
-@onready var burners: Array[MeshInstance3D] = [$ShipModel/BurnerLeft, $ShipModel/BurnerRight]
 
 
 func _ready() -> void:
@@ -128,6 +121,17 @@ func reset_for_spawn() -> void:
 	_shield_timer = 0.0
 	_boost_timer = 0.0
 	_fire_timer = 0.0
+	_muzzle_index = 0
+	_flash_cooldown = 0.0
+	hull_mesh.material_override = null
+	model.reset_feedback()
+	_gravity = Vector3.ZERO
+	last_attacker = null
+	last_damage_pilot = ""
+	last_damage_team = -1
+	last_damage_cause = "HAZARD"
+	last_damage_time = -999.0
+	aim_point = Vector3.ZERO
 	visible = true
 	collision_layer = GameConfig.LAYER_SHIP
 	collision_mask = GameConfig.SHIP_MASK
@@ -170,32 +174,16 @@ func add_gravity(accel: Vector3) -> void:
 
 ## Recolours paint + engine materials so a single scene serves both teams.
 func apply_team_paint(color: Color) -> void:
-	for path: String in PAINT_PATHS:
-		var mi := get_node_or_null(path) as MeshInstance3D
-		if mi == null:
-			continue
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = color
-		mat.metallic = 0.7
-		mat.roughness = 0.34
-		mat.emission_enabled = true
-		mat.emission = color
-		mat.emission_energy_multiplier = 0.22
-		mi.material_override = mat
-
-	var engine := color.lerp(Color(1, 1, 1), 0.5)
-	for glow: MeshInstance3D in engine_glows:
-		glow.material_override = MeshFactory.make_glow_material(engine, 5.0)
-	for burner: MeshInstance3D in burners:
-		burner.material_override = MeshFactory.make_glow_material(engine, 3.0)
-	for light: OmniLight3D in engine_lights:
-		light.light_color = engine
+	model.set_livery(color)
 
 
 # ============================================================== physics ====
 
 func _physics_process(delta: float) -> void:
-	_flash_cooldown = maxf(0.0, _flash_cooldown - delta)
+	if _flash_cooldown > 0.0:
+		_flash_cooldown = maxf(0.0, _flash_cooldown - delta)
+		if _flash_cooldown <= 0.0:
+			hull_mesh.material_override = null
 	recoil = move_toward(recoil, 0.0, delta * 6.0)
 
 	if dead:
@@ -207,8 +195,9 @@ func _physics_process(delta: float) -> void:
 	_consume_gravity(delta)
 	_contain_in_arena(delta)
 
-	var collision := move_and_slide()
-	_resolve_collisions()
+	var incoming_velocity := velocity
+	move_and_slide()
+	_resolve_collisions(incoming_velocity)
 
 	_update_resources(delta)
 	_update_weapon(delta)
@@ -231,11 +220,12 @@ func _integrate_velocity(delta: float) -> void:
 	accel += b.y * cmd_up * thrust_vertical
 
 	var cap := speed_cruise
-	if wants_boost and boost > 0.0:
+	if wants_boost and (boosting or boost >= GameConfig.BOOST_MIN_TO_ENGAGE) and boost > 0.0:
 		boosting = true
 		boost = maxf(0.0, boost - boost_drain * delta)
 		_boost_timer = GameConfig.BOOST_REGEN_DELAY
 		cap = speed_boost
+		accel += -b.z * maxf(cmd_forward, 0.0) * GameConfig.THRUST_AFTERBURNER
 		if boost <= 0.0:
 			wants_boost = false
 	else:
@@ -275,7 +265,7 @@ func _consume_gravity(delta: float) -> void:
 ## restoring acceleration shoves you back, and past the wall a hard clamp.
 func _contain_in_arena(delta: float) -> void:
 	var limit := GameConfig.ARENA_RADIUS - GameConfig.ARENA_MARGIN
-	var offset := Vector3(global_position.x, 0.0, global_position.z)
+	var offset := global_position
 	var dist := offset.length()
 	if dist <= limit:
 		return
@@ -285,13 +275,13 @@ func _contain_in_arena(delta: float) -> void:
 	velocity -= outward * GameConfig.ARENA_PUSH * (0.5 + over * 2.5) * delta
 
 	if dist > GameConfig.ARENA_RADIUS:
-		global_position = Vector3(outward.x, global_position.y, outward.z) * GameConfig.ARENA_RADIUS
+		global_position = outward * GameConfig.ARENA_RADIUS
 		var outward_speed := maxf(0.0, velocity.dot(outward))
 		if outward_speed > GameConfig.ARENA_HARD_SPEED:
 			velocity -= outward * (outward_speed - GameConfig.ARENA_HARD_SPEED)
 
 
-func _resolve_collisions() -> void:
+func _resolve_collisions(incoming_velocity: Vector3) -> void:
 	var count := get_slide_collision_count()
 	if count == 0:
 		return
@@ -304,7 +294,9 @@ func _resolve_collisions() -> void:
 		i += 1
 		var normal: Vector3 = col.get_normal()
 		var other: Object = col.get_collider()
-		var rel_v: Vector3 = velocity - _velocity_of(other)
+		# move_and_slide() has already removed the inward velocity. Damage must
+		# use the incoming speed or a direct impact can look harmless afterwards.
+		var rel_v: Vector3 = incoming_velocity - _velocity_of(other)
 		var closing: float = maxf(0.0, -rel_v.dot(normal))
 
 		# Slide instead of sticking, and bounce off hard hits.
@@ -312,7 +304,7 @@ func _resolve_collisions() -> void:
 		if velocity.length() < 3.0 and closing > 1.0:
 			velocity += normal * closing * 0.4
 
-		var force := rel_v.length()
+		var force := closing
 		if force > worst:
 			worst = force
 			worst_point = col.get_position()
@@ -323,7 +315,7 @@ func _resolve_collisions() -> void:
 	if worst >= GameConfig.COLLISION_MIN_SPEED:
 		# Momentum split: the faster body takes most of the damage.
 		var mine: float = clampf(worst / 45.0, 0.0, 1.0)
-		take_damage(worst * collision_damage_scale * (0.35 + 0.65 * mine), null, worst_point)
+		take_damage(worst * collision_damage_scale * (0.35 + 0.65 * mine), null, worst_point, Vector3.ZERO, {}, "COLLISION")
 
 
 func _velocity_of(other: Object) -> Vector3:
@@ -343,27 +335,37 @@ func _update_resources(delta: float) -> void:
 		_boost_timer = maxf(0.0, _boost_timer - delta)
 		if _boost_timer <= 0.0 and boost < boost_max:
 			boost = minf(boost_max, boost + boost_regen * delta)
-			boost_changed.emit(boost)
+			boost_changed.emit(boost, boost_max)
 
 	if _shield_timer > 0.0:
 		_shield_timer -= delta
 	elif shield < shield_max:
 		shield = minf(shield_max, shield + shield_regen_rate * delta)
-		shield_changed.emit(shield)
+		shield_changed.emit(shield, shield_max)
 
 
 # ================================================================ damage ===
 
-func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO, knockback := Vector3.ZERO) -> void:
+func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO, knockback := Vector3.ZERO, credit: Dictionary = {}, cause := "") -> void:
 	if dead or amount <= 0.0:
 		return
-	if attacker is SpaceShip:
+	var source_name := String(credit.get("name", ""))
+	var source_team := int(credit.get("team", -1))
+	if is_instance_valid(attacker) and attacker is SpaceShip:
 		var a := attacker as SpaceShip
 		if a == self or a.team == team:
 			return
 		last_attacker = a
+		source_name = a.display_name
+		source_team = a.team
+	if source_team == team:
+		return
+	last_damage_pilot = source_name
+	last_damage_team = source_team
+	last_damage_cause = cause if not cause.is_empty() else ("AUTOCANNON" if not source_name.is_empty() else "HAZARD")
 
 	var shielded_before := shield
+	var hull_before := hull
 	shield = maxf(0.0, shield - amount)
 	var absorbed := shielded_before - shield
 	var overflow := amount - absorbed
@@ -371,16 +373,24 @@ func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO
 	# Shields and hull are damaged independently: a big enough hit eats through
 	# the shield and still carries the remainder into the hull.
 	if absorbed > 0.0:
-		shield_changed.emit(shield)
+		var impact := world_pos if world_pos != Vector3.ZERO else global_position + forward() * 2.0
+		model.flash_shield(model.to_local(impact))
+		shield_changed.emit(shield, shield_max)
 		if world_pos != Vector3.ZERO:
 			record_hit(world_pos)
-			Sfx.play_at("shield", world_pos, -10.0)
+			if is_player:
+				Sfx.play_local("shield", -13.0)
+			else:
+				Sfx.play_at("shield", world_pos, -13.0)
 	if overflow > 0.0:
 		hull = maxf(0.0, hull - overflow)
-		hull_changed.emit(hull)
+		hull_changed.emit(hull, hull_max)
 		if world_pos != Vector3.ZERO:
 			record_hit(world_pos)
-			Sfx.play_at("impact", world_pos, -4.0, _rng.randf_range(-1.0, 1.0))
+			if is_player:
+				Sfx.play_local("impact", -8.0, _rng.randf_range(-1.0, 1.0))
+			else:
+				Sfx.play_at("impact", world_pos, -8.0, _rng.randf_range(-1.0, 1.0))
 		_flash_damage()
 
 	if world_pos == Vector3.ZERO:
@@ -389,9 +399,8 @@ func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO
 	if knockback.length_squared() > 0.001:
 		velocity += knockback
 
-	if shield <= 0.0:
-		_shield_timer = shield_regen_delay
-	took_damage.emit(amount, world_pos, attacker)
+	_shield_timer = shield_regen_delay
+	took_damage.emit(absorbed + hull_before - hull, world_pos, attacker)
 
 	if hull <= 0.0:
 		_die(attacker)
@@ -404,7 +413,7 @@ func record_hit(world_pos: Vector3) -> void:
 
 func heal(amount: float) -> void:
 	hull = minf(hull_max, hull + amount)
-	hull_changed.emit(hull)
+	hull_changed.emit(hull, hull_max)
 
 
 func _die(killer: Node) -> void:
@@ -429,20 +438,13 @@ func _flash_damage() -> void:
 	if _flash_cooldown > 0.0 or hull_mesh == null:
 		return
 	_flash_cooldown = 0.12
-	var mesh := hull_mesh
-	_flash_task(mesh)
-
-
-func _flash_task(mesh: MeshInstance3D) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.35, 0.3)
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.25, 0.15)
-	mat.emission_energy_multiplier = 3.0
-	mesh.material_override = mat
-	await get_tree().create_timer(0.12).timeout
-	if is_instance_valid(mesh):
-		mesh.material_override = null
+	if _damage_material == null:
+		_damage_material = StandardMaterial3D.new()
+		_damage_material.albedo_color = Color(1.0, 0.35, 0.3)
+		_damage_material.emission_enabled = true
+		_damage_material.emission = Color(1.0, 0.25, 0.15)
+		_damage_material.emission_energy_multiplier = 3.0
+	hull_mesh.material_override = _damage_material
 
 
 # =============================================================== weapons ===
@@ -458,7 +460,6 @@ func can_fire() -> bool:
 func fire(shots := 1) -> void:
 	if dead:
 		return
-	var parent := _effects_parent()
 	var fired := false
 	for _i in shots:
 		if _fire_timer > 0.0:
@@ -472,11 +473,15 @@ func fire(shots := 1) -> void:
 		velocity -= forward() * bolt_speed * GameConfig.WEAPON_RECOIL
 		recoil = minf(1.0, recoil + 0.55)
 		weapon_fired.emit()
-		Sfx.play_local("laser", -13.0, _rng.randf_range(-1.2, 1.2))
+		if is_player:
+			Sfx.play_local("laser", -13.0, _rng.randf_range(-1.2, 1.2))
+		else:
+			Sfx.play_at("laser", global_position, -13.0, _rng.randf_range(-1.2, 1.2))
 
 
 func _spawn_bolt() -> void:
 	var muzzle: Node3D = muzzle_points[_muzzle_index % muzzle_points.size()]
+	model.flash_muzzle(_muzzle_index)
 	_muzzle_index += 1
 	var bolt := BOLT_SCENE.instantiate()
 	_effects_parent().add_child(bolt)
@@ -499,51 +504,13 @@ func _spawn_bolt() -> void:
 ## "Effects" container so bolts and explosions never end up parented to a ship
 ## (which would make them inherit its motion and rotation).
 func _effects_parent() -> Node:
-	var node: Node = self
-	while node != null:
-		if node.has_node("Effects"):
-			return node.get_node("Effects")
-		node = node.get_parent()
-	var scene := get_tree().current_scene
-	if scene != null and scene.has_node("Effects"):
-		return scene.get_node("Effects")
-	return get_tree().root
+	return GameConfig.effects_parent(self)
 
 
 # ============================================================== visuals ===
 
 func _update_visuals(delta: float) -> void:
-	var load := 0.35 + absf(throttle) * 0.65
-	var boost_extra := 4.0 if boosting else 0.0
-	var energy := 2.0 + load * 3.5 + boost_extra
-	var glow_scale := 0.85 + load * 0.35 + (0.45 if boosting else 0.0)
-	var tint := GameConfig.team_color(team).lerp(Color(1, 1, 1), 0.5)
-
-	var k: float = clampf(delta * 7.0, 0.0, 1.0)
-	for glow: MeshInstance3D in engine_glows:
-		if not is_instance_valid(glow):
-			continue
-		var mat := glow.material_override as StandardMaterial3D
-		if mat != null:
-			mat.emission_energy_multiplier = lerpf(mat.emission_energy_multiplier, energy, k)
-			mat.emission = tint
-		glow.scale = glow.scale.lerp(Vector3.ONE * glow_scale, k)
-
-	for light: OmniLight3D in engine_lights:
-		if not is_instance_valid(light):
-			continue
-		light.light_energy = lerpf(light.light_energy, 0.9 + load * 1.8 + boost_extra * 0.6, k)
-		light.light_color = tint
-
-	var kb: float = clampf(delta * 12.0, 0.0, 1.0)
-	for burner: MeshInstance3D in burners:
-		if not is_instance_valid(burner):
-			continue
-		var target_z := 0.0
-		if boosting:
-			target_z = _rng.randf_range(1.1, 2.0)
-		burner.scale = burner.scale.lerp(Vector3(1.0, 1.0, maxf(target_z, 0.001)), kb)
-		burner.visible = burner.scale.z > 0.06
+	model.update_motion(throttle, boosting, delta)
 
 
 ## Engine drone volume for the locally-controlled ship.

@@ -20,6 +20,7 @@ var target: SpaceShip = null
 var _state_timer := 0.0
 var _decision_timer := 0.0
 var _orbit_dir := 1.0
+var _orbit_switch_timer := 4.0
 var _waypoint := Vector3.ZERO
 var _has_waypoint := false
 var _burst_timer := 0.0
@@ -50,6 +51,9 @@ func _physics_process(delta: float) -> void:
 	_state_timer += delta
 	_decision_timer -= delta
 	_evade_timer -= delta
+	_orbit_switch_timer -= delta
+	if state == State.RETREAT:
+		_retreat_timer -= delta
 
 	if _decision_timer <= 0.0:
 		_decision_timer = reaction / maxf(skill, 0.2)
@@ -81,9 +85,7 @@ func _think() -> void:
 	if hp_ratio < panic and state != State.RETREAT:
 		_set_state(State.RETREAT)
 		_retreat_timer = GameConfig.AI_RETREAT_DURATION
-		return
 	if state == State.RETREAT:
-		_retreat_timer -= reaction
 		# Break off to shake pursuers, then come back around and take pot shots.
 		# Time-boxed, because hull damage never heals.
 		if hp_ratio > panic * 1.25 or _retreat_timer <= 0.0:
@@ -94,7 +96,6 @@ func _think() -> void:
 			_desired_dir = (global_position - target.global_position).normalized()
 			_desired_speed = speed_boost * 0.92
 			wants_boost = true
-			_pick_evade_vector(dist)
 		State.EVADE:
 			# A jink, not a retreat: perpendicular to the threat line and short.
 			# Treating this as "fly away fast" made the AI burn most of the fight
@@ -114,7 +115,7 @@ func _think() -> void:
 func _panic_threshold() -> float:
 	## AI_PANIC_HULL is authored as "percent of max hull"; convert it to the
 	## combined hull+shield pool that _think() actually measures against.
-	return GameConfig.AI_PANIC_HULL / 100.0
+	return hull_max * GameConfig.AI_PANIC_HULL / 100.0 / maxf(hull_max + shield_max, 1.0)
 
 
 func _acquire_target() -> void:
@@ -143,6 +144,7 @@ func _acquire_target() -> void:
 
 func _plan_combat(dist: float) -> void:
 	assert(target != null)
+	wants_boost = false
 	var away := (global_position - target.global_position).normalized()
 	var toward := -away
 
@@ -193,9 +195,13 @@ func _plan_combat(dist: float) -> void:
 			and _rng.randf() < GameConfig.AI_DODGE_CHANCE * reaction * skill * 2.0:
 		_pick_evade_vector(dist)
 
-	if _rng.randf() < 0.25:
-		_orbit_dir = -_orbit_dir
-	_roll_bias = _rng.randf_range(-0.35, 0.35)
+	if _orbit_switch_timer <= 0.0:
+		_orbit_switch_timer = _rng.randf_range(4.0, 7.0)
+		if _rng.randf() < 0.5:
+			_orbit_dir = -_orbit_dir
+	# Hold a readable bank through the pass instead of choosing a new roll
+	# every reaction tick, which competes with tracking the target's nose.
+	_roll_bias = -_orbit_dir * 0.18
 
 
 func _plan_patrol() -> void:
@@ -249,13 +255,16 @@ func _predicted_aim_point() -> Vector3:
 	var muzzle: Node3D = muzzle_points[0]
 	var from := muzzle.global_position
 	var dist := from.distance_to(t.global_position)
-	var flight := dist / maxf(bolt_speed, 1.0)
+	var relative_velocity := t.velocity - velocity * 0.2
+	var flight := Gunnery.intercept_time(t.global_position - from, relative_velocity, bolt_speed)
+	if not is_finite(flight):
+		flight = dist / maxf(bolt_speed, 1.0)
 	# Less skilled pilots lead less, so they whiff more.
-	var lead := flight * clampf(skill, 0.4, 1.8)
+	var lead := flight * clampf(skill, 0.4, 1.0)
 	# Aim scatter is expressed as an angle: a fixed metre offset would be
 	# wild at long range and useless up close.
 	var spread_m: float = clampf(dist * 0.016, 0.35, 4.0) / clampf(skill, 0.4, 1.8)
-	return t.global_position + t.velocity * lead + _aim_noise.normalized() * spread_m
+	return t.global_position + relative_velocity * lead + _aim_noise.normalized() * spread_m
 
 
 func _aim_offset_update(delta: float) -> void:
@@ -303,16 +312,19 @@ func _apply_steering(delta: float) -> void:
 		world_up = right()
 	var target_basis := Basis.looking_at(dir, world_up)
 	if absf(_roll_bias) > 0.01:
-		target_basis = target_basis.rotated(Vector3.BACK, -_roll_bias)
+		# Roll around the ship's nose. A world-Z rotation also deflects aim.
+		target_basis = target_basis * Basis(Vector3.BACK, -_roll_bias)
 
 	var rate := GameConfig.AI_TURN_RATE * clampf(skill, 0.4, 1.8)
 	if state == State.EVADE:
 		rate = GameConfig.AI_TURN_RATE_FAST
 	elif state == State.RETREAT:
 		rate *= 1.2
-	var t: float = clampf(rate * delta, 0.0, 1.0)
-
-	var current := global_transform.basis
+	var current := global_transform.basis.orthonormalized()
+	var angle := current.get_rotation_quaternion().angle_to(target_basis.get_rotation_quaternion())
+	# Rate is radians per second. Exponential interpolation leaves a persistent
+	# angle error while orbiting, so the nose never enters its own firing cone.
+	var t := clampf(rate * delta / maxf(angle, 0.000001), 0.0, 1.0)
 	current = current.slerp(target_basis, t)
 	global_transform.basis = current.orthonormalized()
 
@@ -386,13 +398,16 @@ func _apply_weapons(delta: float) -> void:
 		return
 
 	if _burst_timer <= 0.0:
-		# Fire a single bolt if the target is roughly in front and in sight.
+		# The nose tracks the lead point, so gate the burst against that same
+		# point. Fast crossing targets can be many degrees from the lead point.
 		var muzzle: Node3D = muzzle_points[0]
-		var to_target: Vector3 = target.global_position - muzzle.global_position
-		var ang := rad_to_deg(forward().angle_to(to_target.normalized()))
-		if ang <= GameConfig.AI_FIRE_CONE_DEG and _has_line_of_sight(muzzle.global_position):
+		var prediction := _predicted_aim_point()
+		var flight := Gunnery.intercept_time(target.global_position - muzzle.global_position, target.velocity - velocity * 0.2, bolt_speed)
+		var to_aim := prediction - muzzle.global_position
+		var ang := rad_to_deg(forward().angle_to(to_aim.normalized()))
+		if is_finite(flight) and flight < GameConfig.BOLT_LIFETIME and ang <= GameConfig.AI_FIRE_CONE_DEG and _has_line_of_sight(muzzle.global_position):
 			# Point the cannons at the lead solution so bursts actually connect.
-			aim_point = _predicted_aim_point()
+			aim_point = prediction
 			fire(1)
 			_burst_len = maxf(0.0, _burst_len - fire_interval)
 			_burst_timer = fire_interval * _rng.randf_range(0.9, 1.1)

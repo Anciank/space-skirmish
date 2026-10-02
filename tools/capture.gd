@@ -1,9 +1,8 @@
 extends Node
 ## Screenshot harness. Boots the real game scene, drives the player with
-## synthetic input, and writes PNGs so the visuals can be reviewed without a
-## window.
+## synthetic input, and writes PNGs from the native rendering window.
 ##
-##   godot --headless --script res://tools/capture.gd -- res://captures \
+##   godot --path . res://tools/capture.tscn -- res://captures \
 ##       +shot=NAME,frames,thrust,strafe,boost,fire,yaw,pitch,cam,roll_deg ...
 ##
 ## Shot spec fields:
@@ -34,6 +33,7 @@ func _ready() -> void:
 	_parse_args()
 	var packed: PackedScene = load("res://scenes/main.tscn")
 	_main = packed.instantiate()
+	_main.start_in_menu = false
 	add_child(_main)
 	await get_tree().physics_frame
 	_rig = _main.rig
@@ -73,22 +73,29 @@ func _physics_process(_delta: float) -> void:
 		var spec: Dictionary = _shots[name]
 		if _frame != int(spec.frames):
 			continue
+		# Awaiting a screenshot must not re-enter this callback on the next frame.
+		set_physics_process(false)
 		_drive(spec)
 		if bool(spec.get("duel", false)):
 			await _capture_duel(name)
 			_taken.append(name)
 			_shots.erase(name)
+			set_physics_process(true)
 			continue
 		# Hold the requested attitude while letting the camera, engine glow and
 		# HUD settle into a representative frame.
 		for _i in 10:
 			_turn(float(spec.yaw), float(spec.pitch))
 			await get_tree().physics_frame
-		_capture(name)
+		await _capture(name)
 		_taken.append(name)
 		_shots.erase(name)
+		set_physics_process(true)
 	if _shots.is_empty() and _frame > 30:
+		set_physics_process(false)
 		print("captured: %s" % ", ".join(_taken))
+		_main._show_title()
+		await Sfx.finish_audio()
 		get_tree().quit()
 
 
@@ -115,7 +122,7 @@ func _apply_roll() -> void:
 ## away immediately. Synthetic action presses exercise the same path a human
 ## would, which also means the harness fails if the input map regresses.
 func _drive(spec: Dictionary) -> void:
-	_player.capture_mouse(false)
+	_player.capture_mouse(true)
 
 	_hold("thrust_forward", float(spec.thrust) > 0.01)
 	_hold("thrust_back", float(spec.thrust) < -0.01)
@@ -132,12 +139,14 @@ func _drive(spec: Dictionary) -> void:
 ## input path instead of having its attitude overwritten.
 func _turn(yaw_deg: float, pitch_deg: float) -> void:
 	var turn := Vector2(
-		deg_to_rad(yaw_deg) - _player.yaw,
+		wrapf(deg_to_rad(yaw_deg) - _player.yaw, -PI, PI),
 		deg_to_rad(pitch_deg) - _player.pitch
 	)
 	var ev := InputEventMouseMotion.new()
 	# look_speed is radians per pixel at 60 Hz; invert it to build the delta.
-	ev.relative = Vector2(turn.x, -turn.y) / _player.look_speed
+	ev.relative = -turn / (_player.look_speed * float(GameSettings.get_value("mouse_sensitivity")))
+	if bool(GameSettings.get_value("invert_y")):
+		ev.relative.y *= -1.0
 	_player._unhandled_input(ev)
 
 
@@ -168,7 +177,7 @@ func _aim_at(target: Vector3) -> float:
 	# axis is what a real player does; the mistake is projecting onto the hull's
 	# own up vector, which double-counts the existing roll.
 	_player.yaw = atan2(-dir.x, -dir.z)
-	_player.pitch = rad_to_deg(asin(clampf(dir.y, -1.0, 1.0)))
+	_player.pitch = asin(clampf(dir.y, -1.0, 1.0))
 	_player.roll = 0.0
 	return 0.0
 

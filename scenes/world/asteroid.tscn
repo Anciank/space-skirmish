@@ -1,4 +1,4 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 ; Placeholder sphere in the editor; Asteroid._build_visual() swaps in a
 ; noise-displaced ArrayMesh at runtime.
