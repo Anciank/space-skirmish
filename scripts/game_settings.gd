@@ -10,14 +10,22 @@ const DEFAULTS := {
 	"music_volume": 0.6,
 	"mouse_sensitivity": 1.0,
 	"invert_y": false,
+	"invert_roll": false,
 	"camera_shake": true,
 	"show_hints": true,
 	"field_of_view": 84.0,
 	"fullscreen": false,
 	"difficulty": 1,
+	"ally_count": 31,
+	"enemy_count": 32,
+	"language": "en",
 }
 const DIFFICULTIES := ["CADET", "PILOT", "ACE"]
 const AI_SKILLS := [0.65, 1.0, 1.4]
+const MIN_ALLY_COUNT := 0
+const MAX_ALLY_COUNT := 31
+const MIN_ENEMY_COUNT := 0
+const MAX_ENEMY_COUNT := 32
 
 var values: Dictionary = DEFAULTS.duplicate()
 var storage_path := "user://settings.cfg"
@@ -74,6 +82,8 @@ func save_preferences() -> Error:
 
 func _validated(key: String, value: Variant) -> Variant:
 	var fallback: Variant = DEFAULTS[key]
+	if key == "language":
+		return value if value is String and L10n.LANGUAGES.has(value) else fallback
 	if fallback is bool:
 		return value if value is bool else fallback
 	if not (value is float or value is int) or not is_finite(float(value)):
@@ -87,10 +97,15 @@ func _validated(key: String, value: Variant) -> Variant:
 			return clampf(float(value), 70.0, 100.0)
 		"difficulty":
 			return clampi(int(value), 0, DIFFICULTIES.size() - 1)
+		"ally_count":
+			return int(clampf(float(value), MIN_ALLY_COUNT, MAX_ALLY_COUNT))
+		"enemy_count":
+			return int(clampf(float(value), MIN_ENEMY_COUNT, MAX_ENEMY_COUNT))
 	return fallback
 
 
 func _apply() -> void:
+	L10n.set_language(String(values.language))
 	for pair: Array in [["Master", "master_volume"], ["SFX", "sfx_volume"], ["Engine", "engine_volume"], ["Music", "music_volume"]]:
 		var bus := AudioServer.get_bus_index(pair[0])
 		if bus >= 0:

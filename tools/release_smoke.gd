@@ -14,6 +14,8 @@ func _ready() -> void:
 	_settings_path = GameSettings.storage_path
 	GameSettings.storage_path = "user://release-smoke-test.cfg"
 	GameSettings.reset_to_defaults(false)
+	GameSettings.set_value("ally_count", 2, false)
+	GameSettings.set_value("enemy_count", 3, false)
 	var files := _pack_files("res://")
 	var clean_pack := true
 	for path: String in files:

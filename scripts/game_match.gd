@@ -83,7 +83,8 @@ func log_kill(killer_name: String, killer_team: int, victim_name: String, victim
 		color = Color(0.72, 0.77, 0.84)
 	else:
 		text = "%s  >>  %s" % [killer_name, victim_name]
-	_feed.push_front({"text": text, "color": color, "life": GameConfig.KILLFEED_TIME})
+	_feed.push_front({"text": text, "color": color, "life": GameConfig.KILLFEED_TIME,
+		"killer": killer_name, "victim": victim_name, "cause": weapon})
 	while _feed.size() > GameConfig.KILLFEED_MAX:
 		_feed.pop_back()
 	kill_logged.emit(text, color)

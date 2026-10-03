@@ -19,6 +19,8 @@ func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn")
 	_main = packed.instantiate()
 	_main.start_in_menu = false
+	_main.ally_count = 2
+	_main.enemy_count = 3
 	add_child(_main)
 	# One physics frame so every _ready() has run before we poke at anything.
 	await get_tree().physics_frame
@@ -255,22 +257,26 @@ func _test_weapons() -> void:
 	if enemy == null:
 		return
 
-	enemy.respawn_at(enemy.global_position + Vector3(0, 40, 0), enemy.global_position)
-	enemy.shield = enemy.shield_max
-	enemy.hull = enemy.hull_max
-	enemy.velocity = Vector3.ZERO
-
-	# Park the target 140 m straight ahead and aim at it.
-	# Park both ships on a known line so the shot is reproducible. Setting the
-	# player's velocity and position directly works here because the test drives
-	# it outside _physics_process and holds the values each frame.
-	var stand_off := Vector3(0, 0, 0)
-	var aim_dir := Vector3(0, 0, -1)
-	p.velocity = Vector3.ZERO
-	p.global_position = stand_off
-	enemy.global_position = stand_off + aim_dir * 140.0
-	enemy.velocity = Vector3.ZERO
-	p.look_at(enemy.global_position, Vector3.UP)
+	# Use a clear line above the debris field. Player respawn synchronizes its
+	# controller angles; raw look_at would be overwritten by the next input tick.
+	var stand_off := Vector3(0, 650, 0)
+	var contact := stand_off + Vector3.FORWARD * 140.0
+	var suspended: Array[Dictionary] = []
+	for entry: Dictionary in _main._roster:
+		var ship := entry.ship as SpaceShip
+		if not is_instance_valid(ship) or ship == p:
+			continue
+		suspended.append({"id": ship.get_instance_id(), "physics": ship.is_physics_processing()})
+		ship.set_physics_process(false)
+	# Keep the enemy's live collider, but prevent AI movement or other pilots'
+	# shots from contaminating this player-gunnery observation.
+	for bolt: Node in get_tree().get_nodes_in_group("bolts"):
+		bolt.queue_free()
+	enemy.respawn_at(contact, stand_off)
+	p.respawn_at(stand_off, contact)
+	_main.rig.snap_to_target()
+	await _step(2)
+	p.call("refresh_aim_assist", enemy)
 	_check("bolts fly toward the target",
 		p.forward().dot((enemy.global_position - p.global_position).normalized()) > 0.99,
 		("(dot %.3f)" % p.forward().dot((enemy.global_position - p.global_position).normalized())))
@@ -284,26 +290,29 @@ func _test_weapons() -> void:
 	_check("bolt is in the effects layer", tracked != null)
 
 	var hp_before := enemy.shield + enemy.hull
-	# Sustained fire at close range.
-	for _i in 90:
-		if p.dead or enemy.dead:
-			break
-		enemy.global_position = stand_off + aim_dir * 140.0
-		enemy.velocity = Vector3.ZERO
-		p.global_position = stand_off
-		p.velocity = Vector3.ZERO
-		p.look_at(enemy.global_position, Vector3.UP)
-		p._fire_timer = 0.0
-		p.fire(1)
-		await get_tree().physics_frame
-
-	await _step(6)
-	if enemy.dead:
+	var hits_before := int(GameMatch.pilots.YOU.hits)
+	var damage_before := float(GameMatch.pilots.YOU.damage)
+	var shots_before := int(GameMatch.pilots.YOU.shots)
+	# Hold real input for 1.5 seconds; normal player polling and weapon cooldown
+	# control the cadence. Let the final rounds reach the actual enemy collider.
+	_hold("fire", true)
+	await _step(90)
+	_hold("fire", false)
+	await _step(16)
+	_check("held fire drives the real player weapon cadence", GameMatch.pilots.YOU.shots > shots_before + 10,
+		"(%d rounds)" % (int(GameMatch.pilots.YOU.shots) - shots_before))
+	if not is_instance_valid(enemy) or enemy.dead:
 		_check("sustained fire destroys the target", true, "(killed in the burst)")
 	else:
 		_check("sustained fire damages the target", enemy.shield + enemy.hull < hp_before,
 			"(%.0f -> %.0f)" % [hp_before, enemy.shield + enemy.hull])
+	_check("player round collisions record hits and effective damage",
+		GameMatch.pilots.YOU.hits > hits_before and GameMatch.pilots.YOU.damage > damage_before)
 	_check("a bolt expires after its lifetime", await _bolt_expires(tracked))
+	for snapshot: Dictionary in suspended:
+		var ship := instance_from_id(int(snapshot.id)) as SpaceShip
+		if ship != null:
+			ship.set_physics_process(snapshot.physics)
 
 
 ## Instance id of the most recently spawned bolt, or 0 if there is none.
@@ -393,20 +402,57 @@ func _test_ai() -> void:
 		return
 
 	var ai := ais[0]
-	# Drop the pilot next to a hostile so a dogfight actually starts, and let the
-	# pilot acquire the contact before anything is measured — target acquisition
-	# runs on its own decision interval, not every frame.
+	# Start outside the fighting band so this scenario actually asks the pilot
+	# to accelerate. At exactly 200 m, station-keeping may correctly stay below
+	# the speed required by the liveness check, depending on the hostile's drift.
 	var victim: SpaceShip = null
 	for entry: Dictionary in _main._roster:
 		var s := entry.ship as SpaceShip
 		if is_instance_valid(s) and s.team != ai.team and not s.dead:
 			victim = s
 			break
-	if victim != null:
-		ai.respawn_at(victim.global_position + Vector3(0.0, 0.0, 200.0), victim.global_position)
-	ai.hull = ai.hull_max
+	if victim == null:
+		_check("ai hostile available", false)
+		return
+	# Isolate this approach from earlier kills, redeploys and stray projectiles.
+	# All flight, target acquisition, aim and weapon damage still use real code.
+	var match_active: bool = _main._match_active
+	_main._match_active = false
+	var suspended: Array[Dictionary] = []
+	for entry: Dictionary in _main._roster:
+		var ship := entry.ship as SpaceShip
+		if not is_instance_valid(ship) or ship == ai:
+			continue
+		suspended.append({"ship": ship, "physics": ship.is_physics_processing(),
+			"transform": ship.global_transform, "velocity": ship.velocity,
+			"hull": ship.hull, "shield": ship.shield})
+		ship.set_physics_process(false)
+		ship.global_position = Vector3(float(suspended.size()) * 20.0, -650.0, 0.0)
+		ship.velocity = Vector3.ZERO
+	for bolt: Node in get_tree().get_nodes_in_group("bolts"):
+		bolt.queue_free()
+	var contact := Vector3(0.0, 650.0, -260.0)
+	victim.global_position = contact
+	# A durable test contact keeps the observation window intact. Actual damage
+	# is counted from signals; lethal damage and redeploys are tested above.
+	victim.hull = 1000.0
+	victim.shield = victim.shield_max
+	var skill_before := ai.skill
+	ai.skill = 1.0
+	ai._rng.seed = 20261003
+	ai.respawn_at(Vector3(0.0, 650.0, 260.0), contact)
+	ai.target = null
+	ai.state = AIShip.State.PATROL
+	ai._decision_timer = 0.0
+	ai._orbit_dir = 1.0
+	ai._orbit_switch_timer = 4.0
+	ai._burst_timer = 0.0
+	ai._evade_timer = 0.0
+	ai._aim_noise = Vector3.ZERO
+	# Acquisition runs on its own decision interval, not every frame.
 	for _i in 90:
 		await get_tree().physics_frame
+		victim.velocity = Vector3.ZERO
 
 	_start_damage_tally()
 	var travelled := 0.0
@@ -419,6 +465,7 @@ func _test_ai() -> void:
 	var engaged_names: Dictionary = {}
 	for _i in 420:
 		await get_tree().physics_frame
+		victim.velocity = Vector3.ZERO
 		travelled += ai.global_position.distance_to(last)
 		last = ai.global_position
 		peak_speed = maxf(peak_speed, ai.velocity.length())
@@ -464,6 +511,17 @@ func _test_ai() -> void:
 	_check("ai fire damages the ships it engaged", engaged_damage > 0.0,
 		("(%.0f across %d contact(s): %s)" % [engaged_damage, engaged_names.size(),
 			", ".join(hit_names) if hit_names.size() > 0 else "none hit"]))
+	ai.skill = skill_before
+	for snapshot: Dictionary in suspended:
+		var ship: SpaceShip = snapshot.ship
+		if not is_instance_valid(ship):
+			continue
+		ship.global_transform = snapshot.transform
+		ship.velocity = snapshot.velocity
+		ship.hull = snapshot.hull
+		ship.shield = snapshot.shield
+		ship.set_physics_process(snapshot.physics)
+	_main._match_active = match_active
 
 
 func _fleet_hp() -> float:

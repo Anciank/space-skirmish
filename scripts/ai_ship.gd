@@ -11,7 +11,7 @@ enum State { PATROL, ENGAGE, EVADE, RETREAT }
 
 ## Multiplier on reaction speed / accuracy. 1.0 = baseline.
 @export var skill := 1.0
-## Seconds between AI firing decisions.
+## Seconds between tactical decisions. Better pilots react sooner.
 @export var reaction := 0.14
 
 var state: int = State.PATROL
@@ -35,12 +35,56 @@ var _desired_speed := 0.0
 var _cmd_forward := 0.0
 var _roll_bias := 0.0
 var _aim_noise := Vector3.ZERO
+var _aim_noise_goal := Vector3.ZERO
+var _aim_noise_timer := 0.0
+var _target_scan_timer := 0.0
+var _evade_cooldown := 0.0
+var _retreat_cooldown := 0.0
+var _attacker_memory := 0.0
+var _recent_attacker: SpaceShip
+var _damage_pressure := 0.0
+var _travel_priority := false
+var _burst_hold_timer := 0.0
 
 
 func _ready() -> void:
 	super()
+	took_damage.connect(_on_combat_damage)
 	_desired_dir = forward()
 	_think()
+
+
+func reset_for_spawn() -> void:
+	super()
+	state = State.PATROL
+	target = null
+	_recent_attacker = null
+	_state_timer = 0.0
+	_decision_timer = 0.0
+	_target_scan_timer = 0.0
+	_attacker_memory = 0.0
+	_damage_pressure = 0.0
+	_retreat_timer = 0.0
+	_retreat_cooldown = 0.0
+	_evade_timer = 0.0
+	_evade_cooldown = 0.0
+	_evade_vector = Vector3.ZERO
+	_burst_timer = 0.0
+	_burst_len = 0.0
+	_burst_gap = 0.0
+	_burst_hold_timer = 0.0
+	_has_waypoint = false
+	_waypoint = Vector3.ZERO
+	_desired_dir = forward()
+	_desired_speed = 0.0
+	_cmd_forward = 0.0
+	_roll_bias = 0.0
+	_aim_noise = Vector3.ZERO
+	_aim_noise_goal = Vector3.ZERO
+	_aim_noise_timer = 0.0
+	_travel_priority = false
+	_orbit_dir = -1.0 if _rng.randf() < 0.5 else 1.0
+	_orbit_switch_timer = _rng.randf_range(4.0, 7.0)
 
 
 func _physics_process(delta: float) -> void:
@@ -52,6 +96,11 @@ func _physics_process(delta: float) -> void:
 	_decision_timer -= delta
 	_evade_timer -= delta
 	_orbit_switch_timer -= delta
+	_target_scan_timer -= delta
+	_evade_cooldown -= delta
+	_retreat_cooldown -= delta
+	_attacker_memory -= delta
+	_damage_pressure -= delta
 	if state == State.RETREAT:
 		_retreat_timer -= delta
 
@@ -70,19 +119,24 @@ func _physics_process(delta: float) -> void:
 # ============================================================== decisions ==
 
 func _think() -> void:
+	_travel_priority = false
 	_acquire_target()
 	# Effective health: a pilot sitting on full shields is not in danger yet.
 	var hp_ratio := (hull + shield) / maxf(hull_max + shield_max, 1.0)
 
 	if target == null or not is_instance_valid(target) or target.dead:
 		target = null
+		if state == State.RETREAT:
+			_retreat_cooldown = GameConfig.AI_RETREAT_COOLDOWN
+			_retreat_timer = 0.0
 		_set_state(State.PATROL)
 		_plan_patrol()
+		_avoid_hazards()
 		return
 
 	var dist := global_position.distance_to(target.global_position)
 	var panic := _panic_threshold()
-	if hp_ratio < panic and state != State.RETREAT:
+	if hp_ratio < panic and state != State.RETREAT and _retreat_cooldown <= 0.0:
 		_set_state(State.RETREAT)
 		_retreat_timer = GameConfig.AI_RETREAT_DURATION
 	if state == State.RETREAT:
@@ -90,6 +144,14 @@ func _think() -> void:
 		# Time-boxed, because hull damage never heals.
 		if hp_ratio > panic * 1.25 or _retreat_timer <= 0.0:
 			_set_state(State.ENGAGE)
+			_retreat_cooldown = GameConfig.AI_RETREAT_COOLDOWN
+	if state == State.EVADE and _evade_timer <= 0.0:
+		_set_state(State.ENGAGE)
+	if state == State.ENGAGE and _evade_cooldown <= 0.0 \
+			and dist > GameConfig.AI_MIN_SEPARATION * 1.2:
+		var threat := _incoming_threat()
+		if threat != Vector3.ZERO or _damage_pressure > 0.0:
+			_pick_evade_vector(dist, threat)
 
 	match state:
 		State.RETREAT:
@@ -97,19 +159,13 @@ func _think() -> void:
 			_desired_speed = speed_boost * 0.92
 			wants_boost = true
 		State.EVADE:
-			# A jink, not a retreat: perpendicular to the threat line and short.
-			# Treating this as "fly away fast" made the AI burn most of the fight
-			# in EVADE, sailing steadily out of its own engagement band.
-			_desired_dir = _evade_vector
-			_desired_speed = speed_cruise * 0.8
+			_set_desired_velocity(target.velocity + _evade_vector * speed_cruise * 0.8)
 			wants_boost = false
-			if _evade_timer <= 0.0:
-				_set_state(State.ENGAGE)
 		_:
 			_set_state(State.ENGAGE)
 			_plan_combat(dist)
 
-	_plan_patrol_if_idle()
+	_avoid_hazards()
 
 
 func _panic_threshold() -> float:
@@ -119,141 +175,263 @@ func _panic_threshold() -> float:
 
 
 func _acquire_target() -> void:
-	if target != null and is_instance_valid(target) and not target.dead:
-		if global_position.distance_to(target.global_position) < GameConfig.AI_MAX_RANGE:
-			return
-	target = null
-
+	var retained := _valid_enemy(target) and global_position.distance_to(target.global_position) < GameConfig.AI_MAX_RANGE
+	if retained and _target_scan_timer > 0.0:
+		return
+	_target_scan_timer = GameConfig.AI_TARGET_SCAN_INTERVAL / clampf(skill, 0.5, 1.8)
 	var best: SpaceShip = null
-	var best_dist := INF
+	var best_score := INF
+	var current_score := _target_score(target) if retained else INF
 	for node: Node in get_tree().get_nodes_in_group("ships"):
 		var other := node as SpaceShip
-		if other == null or other == self or other.dead or other.team == team:
+		if not _valid_enemy(other):
 			continue
 		var d := global_position.distance_to(other.global_position)
 		if d > GameConfig.AI_AGGRO_RANGE:
 			continue
-		# Prefer whoever is already looking at us, then whoever is closest.
-		var facing := absf(forward().dot((other.global_position - global_position).normalized()))
-		var score := d - facing * 160.0
-		if score < best_dist:
-			best_dist = score
+		var score := _target_score(other)
+		if score < best_score:
+			best_score = score
 			best = other
+	if retained and (best == null or best_score + GameConfig.AI_TARGET_SWITCH_MARGIN >= current_score):
+		return
+	if target != best:
+		_burst_len = 0.0
+		_burst_hold_timer = 0.0
 	target = best
+
+
+func _valid_enemy(other: Variant) -> bool:
+	# A target can be freed between reaction ticks during a redeploy. Accept
+	# the reference first, then validate it before treating it as a ship.
+	return is_instance_valid(other) and other is SpaceShip and other != self and not other.dead and other.team != team
+
+
+func _target_score(other: SpaceShip) -> float:
+	var offset := other.global_position - global_position
+	var distance := offset.length()
+	var direction := offset.normalized()
+	# Nearby contacts in front are easy to engage. An enemy aiming at us or
+	# actually hitting us is more urgent than a passive contact at equal range.
+	var score := distance - maxf(0.0, forward().dot(direction)) * 70.0
+	if distance < 400.0:
+		score -= maxf(0.0, other.forward().dot(-direction) - 0.85) / 0.15 * 85.0
+	if _attacker_memory > 0.0 and other == _recent_attacker:
+		score -= 150.0
+	var health := clampf((other.hull + other.shield) / maxf(other.hull_max + other.shield_max, 1.0), 0.0, 1.0)
+	score -= (1.0 - health) * 45.0
+	return score
 
 
 func _plan_combat(dist: float) -> void:
 	assert(target != null)
 	wants_boost = false
-	var away := (global_position - target.global_position).normalized()
-	var toward := -away
-
-	# Inside the hard separation floor: forget dogfighting, just get out. This
-	# has to win over every other consideration or the AI ends up nose-to-nose
-	# with a target, where the aim cone is meaningless.
+	var toward := (target.global_position - global_position).normalized()
 	if dist < GameConfig.AI_MIN_SEPARATION:
-		# Full authority, straight out. Nose still points at the target (see
-		# _aim_solution) so the guns stay live while separating.
-		_desired_dir = away
-		_desired_speed = speed_boost
+		# Turn the main drive into the breakaway before spending afterburner.
+		_travel_priority = true
+		_desired_dir = -toward
+		_desired_speed = speed_boost * 0.9
 		wants_boost = true
 		_roll_bias = 0.0
 		return
 
-	# Hold a stand-off band. Approach speed tapers as the gap closes so the AI
-	# settles into the band instead of overshooting into the separation floor.
-	# The station-keeping term is deliberately gentle: the hull is aimed at the
-	# target, so any inward component here becomes reverse thrust.
-	var orbit := _side_vector() * _orbit_dir
-
-	if dist > GameConfig.AI_ENGAGE_BAND_MAX:
-		# Close the gap, but only as fast as the excess range allows. Arriving at
-		# the band with 200 m/s of momentum means sailing straight back out of it,
-		# because coasting drag is far too weak to shed that in time.
-		_desired_dir = toward
-		_desired_speed = clampf(
-			(dist - GameConfig.AI_ENGAGE_BAND_MAX) / 220.0 * speed_cruise,
-			0.0, speed_cruise)
-	elif dist < GameConfig.AI_ENGAGE_BAND_MIN:
-		# Inside the band: bleed off approach speed while drifting outward and
-		# sideways, so the next pass starts from a stable orbit.
-		_desired_dir = (away * 0.7 + orbit * 0.6).normalized()
-		_desired_speed = speed_cruise * 0.55
-	else:
-		# In the sweet spot: station-keep and orbit. A small constant inward bias
-		# cancels whatever outward drift the approach left behind, which the
-		# velocity controller alone cannot shed at this thrust authority.
-		_desired_dir = (toward * 0.4 + orbit * 0.8).normalized()
-		_desired_speed = speed_cruise * 0.5
-
-	# The nose is handled by _apply_steering; _desired_dir is only the direction
-	# we want to travel in, so it stays purely a manoeuvring input.
-
-	# Random jinks make dogfights readable. Skipped at close range, where there
-	# is no room to jink and the priority is simply not colliding.
-	if dist > GameConfig.AI_ENGAGE_BAND_MIN \
-			and _rng.randf() < GameConfig.AI_DODGE_CHANCE * reaction * skill * 2.0:
-		_pick_evade_vector(dist)
+	# Match the target's motion, then correct range relative to it. Otherwise
+	# even a steady sideways target outruns a pilot orbiting a fixed point.
+	var preferred_range := (GameConfig.AI_ENGAGE_BAND_MIN + GameConfig.AI_ENGAGE_BAND_MAX) * 0.5
+	var radial_speed := clampf((dist - preferred_range) * 0.75, -speed_cruise * 0.7, speed_cruise)
+	if dist > GameConfig.AI_ENGAGE_BAND_MAX + 180.0 and boost >= GameConfig.BOOST_MIN_TO_ENGAGE:
+		wants_boost = true
+		radial_speed = minf((dist - preferred_range) * 0.75, speed_boost * 0.9)
+	var orbit_weight := clampf(1.0 - (dist - GameConfig.AI_ENGAGE_BAND_MAX) / 220.0, 0.0, 1.0)
+	var orbit_velocity := _side_vector() * _orbit_dir * speed_cruise * 0.38 * orbit_weight
+	_set_desired_velocity(target.velocity + toward * radial_speed + orbit_velocity,
+		speed_boost if wants_boost else speed_cruise)
 
 	if _orbit_switch_timer <= 0.0:
 		_orbit_switch_timer = _rng.randf_range(4.0, 7.0)
-		if _rng.randf() < 0.5:
-			_orbit_dir = -_orbit_dir
-	# Hold a readable bank through the pass instead of choosing a new roll
-	# every reaction tick, which competes with tracking the target's nose.
+		_orbit_dir = -_orbit_dir
 	_roll_bias = -_orbit_dir * 0.18
+
+
+func _set_desired_velocity(value: Vector3, cap := -1.0) -> void:
+	var limit := speed_cruise if cap < 0.0 else cap
+	var travel := value.limit_length(limit)
+	_desired_speed = travel.length()
+	_desired_dir = travel.normalized()
 
 
 func _plan_patrol() -> void:
 	if not _has_waypoint or global_position.distance_to(_waypoint) < 220.0:
 		_waypoint = GameConfig.random_spawn_point(_rng, [global_position], 400.0)
 		_has_waypoint = true
-	var dir := (_waypoint - global_position).normalized()
-	_desired_dir = (dir + _side_vector() * 0.25 * sin(float(Time.get_ticks_msec()) * 0.0002)).normalized()
+	_desired_dir = (_waypoint - global_position).normalized()
 	_desired_speed = GameConfig.AI_IDLE_SPEED
 	_roll_bias = 0.0
-	_burst_timer = 0.0
+	wants_boost = false
+	_burst_len = 0.0
 
 
-func _plan_patrol_if_idle() -> void:
-	if state == State.PATROL:
-		_plan_patrol()
+func _on_combat_damage(_amount: float, _position: Vector3, attacker: Node) -> void:
+	var enemy := attacker as SpaceShip
+	if _valid_enemy(enemy):
+		_recent_attacker = enemy
+		_attacker_memory = 3.0
+		_damage_pressure = 0.65
+		_target_scan_timer = 0.0
 
 
-## Picks a short lateral dodge: mostly sideways, only slightly away, so the AI
-## breaks the enemy's firing solution without abandoning the fight.
-func _pick_evade_vector(dist: float) -> void:
-	var away := Vector3.UP
-	if target != null and is_instance_valid(target):
-		away = (global_position - target.global_position).normalized()
-	var side := _side_vector()
+## React only to hostile rounds that are approaching and will pass near us.
+## This runs at the pilot's reaction rate, with a cooldown between jinks.
+func _incoming_threat() -> Vector3:
+	var soonest := INF
+	var threat := Vector3.ZERO
+	for node: Node in get_tree().get_nodes_in_group("bolts"):
+		var bolt := node as LaserBolt
+		if bolt == null:
+			continue
+		var shooter := bolt.attacker as SpaceShip if is_instance_valid(bolt.attacker) else null
+		var bolt_team: int = shooter.team if shooter != null else int(bolt._credit.get("team", team))
+		if bolt_team == team:
+			continue
+		var relative := bolt.velocity - velocity
+		var offset := bolt.global_position - global_position
+		if relative.length_squared() < 1.0 or offset.dot(relative) >= 0.0:
+			continue
+		var time := -offset.dot(relative) / relative.length_squared()
+		var horizon := GameConfig.AI_THREAT_LOOKAHEAD * clampf(skill, 0.6, 1.5)
+		if time <= 0.0 or time > minf(horizon, bolt.lifetime - bolt._age):
+			continue
+		if (offset + relative * time).length() > collision_radius + 6.0:
+			continue
+		if time < soonest:
+			soonest = time
+			threat = relative
+	return threat
+
+
+func _pick_evade_vector(_dist: float, threat := Vector3.ZERO) -> void:
+	var direction := threat.normalized()
+	if direction == Vector3.ZERO and is_instance_valid(target):
+		direction = (global_position - target.global_position).normalized()
+	var side := direction.cross(Vector3.UP)
+	if side.length_squared() < 0.001:
+		side = direction.cross(Vector3.RIGHT)
 	if side.length_squared() < 0.001:
 		side = right()
-	_evade_vector = (side * _orbit_dir - away * 0.25).normalized()
-	_evade_timer = _rng.randf_range(0.35, 0.7)
-	# Breaking off only makes sense with room to manoeuvre.
-	if dist > GameConfig.AI_ENGAGE_BAND_MIN * 0.8 and _rng.randf() < 0.5:
-		_set_state(State.EVADE)
+	_evade_vector = side.normalized() * _orbit_dir
+	_evade_timer = _rng.randf_range(0.5, 0.8)
+	_evade_cooldown = _evade_timer + GameConfig.AI_EVADE_COOLDOWN
+	_damage_pressure = 0.0
+	_set_state(State.EVADE)
 
 
 func _side_vector() -> Vector3:
-	var ref := Vector3.UP
-	if target != null and is_instance_valid(target):
-		ref = target.global_position - global_position
-	if absf(ref.normalized().dot(forward())) > 0.95:
-		ref = right()
-	var side := forward().cross(ref.normalized())
+	var ref := forward()
+	if is_instance_valid(target):
+		ref = (target.global_position - global_position).normalized()
+	var side := ref.cross(Vector3.UP)
 	if side.length_squared() < 0.0001:
-		side = right()
+		side = ref.cross(Vector3.RIGHT)
 	return side.normalized()
 
 
-func _predicted_aim_point() -> Vector3:
+## Bias the flight plan around predicted collisions before using the arena's
+## physical wall or hull impacts as a brake. Gun tracking remains independent
+## unless an imminent collision needs the stronger main drive to escape.
+func _avoid_hazards() -> void:
+	var travel := _desired_dir * _desired_speed
+	var correction := Vector3.ZERO
+	var urgent := false
+	var horizon := GameConfig.AI_NAV_LOOKAHEAD
+	var probe := velocity.lerp(travel, 0.55) + _gravity * horizon * 0.25
+	# An intended turn cannot erase existing momentum. Inspect the current
+	# path too, plus a gravity-curved estimate near the large anchors.
+	var paths: Array[Vector3] = [velocity, velocity + _gravity * horizon * 0.5, probe]
+	var max_probe_speed := 0.0
+	for path: Vector3 in paths:
+		max_probe_speed = maxf(max_probe_speed, path.length())
+	var obstacles: Array[Node] = get_tree().get_nodes_in_group("rocks")
+	obstacles.append_array(get_tree().get_nodes_in_group("bodies"))
+	obstacles.append_array(get_tree().get_nodes_in_group("ships"))
+	for node: Node in obstacles:
+		if node == self or not node is Node3D:
+			continue
+		var position: Vector3 = (node as Node3D).global_position
+		var obstacle_velocity := Vector3.ZERO
+		var obstacle_radius := 0.0
+		if node is Asteroid:
+			var rock := node as Asteroid
+			if rock.dead:
+				continue
+			obstacle_velocity = rock.linear_velocity
+			obstacle_radius = rock.radius * 1.3
+		elif node is StarBody:
+			obstacle_radius = (node as StarBody).radius * 1.3
+		elif node is SpaceShip:
+			var ship := node as SpaceShip
+			if ship.dead:
+				continue
+			obstacle_velocity = ship.velocity
+			obstacle_radius = ship.collision_radius
+		else:
+			continue
+		var offset := global_position - position
+		var safe_radius := obstacle_radius + collision_radius + 8.0
+		# Skip distant scenery before doing closest-approach work.
+		if offset.length() > safe_radius + (max_probe_speed + obstacle_velocity.length()) * horizon:
+			continue
+		var time := 0.0
+		var nearest := offset
+		for path: Vector3 in paths:
+			var relative := path - obstacle_velocity
+			var pass_time := clampf(-offset.dot(relative) / maxf(relative.length_squared(), 0.001), 0.0, horizon)
+			var pass_offset := offset + relative * pass_time
+			if pass_offset.length_squared() < nearest.length_squared():
+				nearest = pass_offset
+				time = pass_time
+		if nearest.length() >= safe_radius or (time <= 0.0 and offset.length() >= safe_radius):
+			continue
+		var escape := nearest.normalized()
+		# A head-on approach has no natural side. Use the same orbit direction
+		# across decisions so pilots commit to passing one side of the rock.
+		if nearest.length() < safe_radius * 0.25:
+			escape = (-offset.normalized()).cross(Vector3.UP)
+			if escape.length_squared() < 0.001:
+				escape = (-offset.normalized()).cross(Vector3.RIGHT)
+			escape = escape.normalized() * _orbit_dir
+		var strength := clampf((safe_radius - nearest.length()) / maxf(time, 0.3) * 2.0 + 25.0, 25.0, speed_cruise * 1.4)
+		correction += escape * strength
+		if offset.length() < safe_radius + 12.0:
+			correction += offset.normalized() * speed_cruise * 0.8
+		if time < 0.7 or offset.length() < safe_radius:
+			urgent = true
+	if correction.length_squared() > 1.0:
+		travel += correction
+		wants_boost = false
+		travel = travel.limit_length(speed_cruise * (0.7 if urgent else 1.0))
+		_travel_priority = _travel_priority or urgent
+
+	var distance := global_position.length()
+	var outward := global_position / maxf(distance, 0.001)
+	var safe_edge := GameConfig.ARENA_RADIUS - GameConfig.ARENA_MARGIN - 25.0
+	var outward_speed := maxf(velocity.dot(outward), 0.0)
+	var stopping_distance := outward_speed * outward_speed / (2.0 * maxf(thrust_lateral, 1.0))
+	if distance + maxf(stopping_distance, outward_speed * horizon) > safe_edge:
+		var allowed := clampf((safe_edge - distance) / horizon, -speed_cruise * 0.7, speed_cruise)
+		travel -= outward * maxf(0.0, travel.dot(outward) - allowed)
+		wants_boost = false
+		if distance > GameConfig.ARENA_RADIUS - GameConfig.ARENA_MARGIN:
+			_travel_priority = true
+	_set_desired_velocity(travel, speed_boost if wants_boost else speed_cruise)
+
+
+func _predicted_aim_point(from := Vector3.INF) -> Vector3:
 	var t := target
 	# Aim from the gun, not the hull centre, so the muzzle offset is accounted
 	# for instead of throwing every shot wide.
-	var muzzle: Node3D = muzzle_points[0]
-	var from := muzzle.global_position
+	if from == Vector3.INF:
+		from = muzzle_points[_muzzle_index % muzzle_points.size()].global_position
 	var dist := from.distance_to(t.global_position)
 	var relative_velocity := t.velocity - velocity * 0.2
 	var flight := Gunnery.intercept_time(t.global_position - from, relative_velocity, bolt_speed)
@@ -269,12 +447,11 @@ func _predicted_aim_point() -> Vector3:
 
 func _aim_offset_update(delta: float) -> void:
 	# Slowly wandering aim error keeps the AI from being a perfect turret.
-	var amount := 3.0 / clampf(skill, 0.3, 2.0)
-	_aim_noise = _aim_noise.lerp(Vector3(
-		_rng.randfn(0.0, amount),
-		_rng.randfn(0.0, amount),
-		_rng.randfn(0.0, amount)
-	), delta * 1.1)
+	_aim_noise_timer -= delta
+	if _aim_noise_timer <= 0.0:
+		_aim_noise_timer = reaction / maxf(skill, 0.2)
+		_aim_noise_goal = Vector3(_rng.randfn(), _rng.randfn(), _rng.randfn())
+	_aim_noise = _aim_noise.lerp(_aim_noise_goal, 1.0 - exp(-delta * 1.1))
 
 
 func _set_state(s: int) -> void:
@@ -283,6 +460,9 @@ func _set_state(s: int) -> void:
 		_state_timer = 0.0
 		if s != State.RETREAT:
 			_burst_timer = 0.0
+		else:
+			_burst_len = 0.0
+			_burst_hold_timer = 0.0
 
 
 # =============================================================== steering ==
@@ -332,40 +512,32 @@ func _apply_steering(delta: float) -> void:
 ## Where the nose should point right now: the lead solution in a fight, the
 ## travel direction while patrolling.
 func _aim_solution() -> Vector3:
-	if state == State.PATROL or state == State.RETREAT:
+	if state == State.PATROL or state == State.RETREAT or _travel_priority:
 		return Vector3.ZERO
 	if target == null or not is_instance_valid(target) or target.dead:
 		return Vector3.ZERO
 	return _predicted_aim_point()
 
 
-## Converts the intended travel direction into thrust commands, given that the
-## nose is already pointing at (or away from) the target.
-## Translates the intended travel vector into thrust commands.
-##
-## This is a velocity controller, not a "point at where I want to go" scheme.
-## The hull is aimed at the target while it manoeuvres, so projecting the
-## travel direction onto the ship's axes and treating that as throttle is what
-## made earlier versions fly backwards or flee the arena: a nose-on-target ship
-## sees "travel away" as a negative nose component, which the code then read as
-## a throttle reduction instead of reverse thrust, and any error fed itself.
-##
-## Instead: compute the desired world velocity, subtract the actual one, and
-## convert that error vector into per-axis thrust. Sign, braking and reversing
-## all fall out of the arithmetic instead of being special-cased.
+## Resolve the desired world velocity into the ship's real thrust axes.
+## Guns can track an opponent while lateral and reverse thrust control range.
 func _apply_translation(delta: float) -> void:
 	var travel := _desired_dir
-	if travel.length_squared() < 0.0001:
-		cmd_forward = move_toward(cmd_forward, 0.0, delta * 3.0)
-		cmd_right = move_toward(cmd_right, 0.0, delta * 3.0)
-		cmd_up = move_toward(cmd_up, 0.0, delta * 3.0)
-		return
 	travel = travel.normalized()
 
-	var error := travel * _desired_speed - velocity
+	# Compensate for the shared flight model's drag and gravity using real
+	# thruster authority. Desired velocity can then match a moving opponent.
+	var error := (travel * _desired_speed - velocity) * GameConfig.AI_VELOCITY_GAIN
+	error += velocity * drift_damping - _gravity
+	# The afterburner supplies forward thrust only. Save energy while turning,
+	# reversing, or holding position instead of burning it for lateral motion.
+	wants_boost = wants_boost and forward().dot(travel) > 0.88 and error.dot(forward()) > 5.0
 	# Per-axis limits mirror the real thruster strengths, so a sideways demand
 	# never gets met by cheating with the (much stronger) main drive.
-	var fwd_cmd := clampf(error.dot(forward()) / maxf(thrust_main, 1.0), -1.0, 1.0)
+	var forward_authority := thrust_main
+	if wants_boost and (boosting or boost >= GameConfig.BOOST_MIN_TO_ENGAGE):
+		forward_authority += GameConfig.THRUST_AFTERBURNER
+	var fwd_cmd := clampf(error.dot(forward()) / maxf(forward_authority, 1.0), -1.0, 1.0)
 	var right_cmd := clampf(error.dot(right()) / maxf(thrust_lateral, 1.0), -1.0, 1.0)
 	var up_cmd := clampf(error.dot(up()) / maxf(thrust_vertical, 1.0), -1.0, 1.0)
 
@@ -381,48 +553,66 @@ func _apply_translation(delta: float) -> void:
 # =============================================================== weapons ==
 
 func _apply_weapons(delta: float) -> void:
-	if target == null or not is_instance_valid(target) or target.dead:
+	if not _valid_enemy(target):
 		_burst_timer = 0.0
 		_burst_len = 0.0
+		_burst_hold_timer = 0.0
 		return
-	if state == State.RETREAT:
+	if state == State.RETREAT or state == State.PATROL or _travel_priority:
 		return
 
 	_burst_timer -= delta
 	if _burst_len <= 0.0:
-		# Cooldown between bursts, then a chance to open one.
 		_burst_gap -= delta
-		if _burst_gap <= 0.0 and _rng.randf() < 0.35 * skill:
-			_burst_len = _rng.randf_range(GameConfig.AI_BURST_LEN * 0.4, GameConfig.AI_BURST_LEN)
-			_burst_timer = 0.0
+		if _burst_gap > 0.0:
+			return
+		# One deliberate burst decision, rather than a probability per frame.
+		_burst_len = _rng.randf_range(GameConfig.AI_BURST_LEN * 0.4, GameConfig.AI_BURST_LEN)
+		_burst_timer = 0.0
+		_burst_hold_timer = 0.0
+	_burst_hold_timer += delta
+	if _burst_hold_timer > 1.6:
+		_finish_burst()
+		return
+	if _burst_timer > 0.0 or not can_fire():
 		return
 
-	if _burst_timer <= 0.0:
-		# The nose tracks the lead point, so gate the burst against that same
-		# point. Fast crossing targets can be many degrees from the lead point.
-		var muzzle: Node3D = muzzle_points[0]
-		var prediction := _predicted_aim_point()
-		var flight := Gunnery.intercept_time(target.global_position - muzzle.global_position, target.velocity - velocity * 0.2, bolt_speed)
-		var to_aim := prediction - muzzle.global_position
-		var ang := rad_to_deg(forward().angle_to(to_aim.normalized()))
-		if is_finite(flight) and flight < GameConfig.BOLT_LIFETIME and ang <= GameConfig.AI_FIRE_CONE_DEG and _has_line_of_sight(muzzle.global_position):
-			# Point the cannons at the lead solution so bursts actually connect.
-			aim_point = prediction
-			fire(1)
-			_burst_len = maxf(0.0, _burst_len - fire_interval)
-			_burst_timer = fire_interval * _rng.randf_range(0.9, 1.1)
-		else:
-			_burst_timer = 0.08
+	var muzzle: Node3D = muzzle_points[_muzzle_index % muzzle_points.size()]
+	var prediction := _predicted_aim_point(muzzle.global_position)
+	var flight := Gunnery.intercept_time(target.global_position - muzzle.global_position,
+		target.velocity - velocity * 0.2, bolt_speed)
+	var to_aim := prediction - muzzle.global_position
+	var angle := rad_to_deg(forward().angle_to(to_aim.normalized()))
+	if is_finite(flight) and flight < GameConfig.BOLT_LIFETIME \
+			and angle <= GameConfig.AI_FIRE_CONE_DEG \
+			and _has_line_of_sight(muzzle.global_position, prediction, flight):
+		aim_point = prediction
+		fire(1)
+		_burst_len = maxf(0.0, _burst_len - fire_interval)
+		_burst_timer = fire_interval * _rng.randf_range(1.0, 1.15)
 		if _burst_len <= 0.0:
-			_burst_gap = GameConfig.AI_BURST_GAP * _rng.randf_range(0.7, 1.4)
+			_finish_burst()
+	else:
+		_burst_timer = reaction / maxf(skill, 0.2)
 
 
-func _has_line_of_sight(from: Vector3) -> bool:
-	var to: Vector3 = target.global_position
-	var query := PhysicsRayQueryParameters3D.create(from, to, GameConfig.WEAPON_MASK)
-	query.exclude = [get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty():
+func _finish_burst() -> void:
+	_burst_len = 0.0
+	_burst_hold_timer = 0.0
+	_burst_gap = GameConfig.AI_BURST_GAP * _rng.randf_range(0.8, 1.3) / clampf(skill, 0.5, 1.8)
+
+
+## Check where the bolt will actually travel, including inherited shooter
+## motion. A clear ray to the target's current position is insufficient for
+## lead shots, and a teammate can cross the path before the round arrives.
+func _has_line_of_sight(from: Vector3, prediction := Vector3.ZERO, flight := -1.0) -> bool:
+	if not _valid_enemy(target):
 		return false
-	var collider: Object = hit.get("collider")
-	return collider == target
+	if prediction == Vector3.ZERO:
+		prediction = _predicted_aim_point(from)
+	if flight < 0.0:
+		flight = Gunnery.intercept_time(target.global_position - from,
+			target.velocity - velocity * 0.2, bolt_speed)
+	if not is_finite(flight) or flight <= 0.0 or flight >= GameConfig.BOLT_LIFETIME:
+		return false
+	return Gunnery.has_clear_path(self, target, from, prediction, flight)

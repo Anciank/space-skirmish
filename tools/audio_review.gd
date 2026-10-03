@@ -31,7 +31,7 @@ func _ready() -> void:
 	_main.menu.show_settings()
 	Sfx.play_ui()
 	await _seconds(1.0)
-	_main._start_match()
+	_main._start_match(false)
 	_main.arena.process_mode = Node.PROCESS_MODE_DISABLED
 	for rock: Node in get_tree().get_nodes_in_group("rocks"):
 		rock.freeze = true

@@ -1,0 +1,26 @@
+{
+  "NotoSans.ttf": {
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf",
+    "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosans/OFL.txt",
+    "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+    "bytes": 2049096
+  },
+  "NotoSansArabic.ttf": {
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf",
+    "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/OFL.txt",
+    "sha256": "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e",
+    "bytes": 844676
+  },
+  "NotoSansDevanagari.ttf": {
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf",
+    "license_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansdevanagari/OFL.txt",
+    "sha256": "14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e",
+    "bytes": 641944
+  },
+  "NotoSansCJKsc-Regular.otf": {
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+    "license_url": "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE",
+    "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+    "bytes": 16437364
+  }
+}

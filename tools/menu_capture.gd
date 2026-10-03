@@ -1,6 +1,7 @@
 extends Node
 ## Render the real front end and round transitions for visual review.
 ## godot --path . res://tools/menu_capture.tscn -- /tmp/star-skirmish-menu
+## Add --fleet32 to select and save a 32-vs-32 match through the menu controls.
 
 var _main: Node3D
 var _out := "/tmp/star-skirmish-menu"
@@ -12,7 +13,11 @@ func _ready() -> void:
 		_out = OS.get_cmdline_user_args()[0]
 	DirAccess.make_dir_recursive_absolute(_out)
 	_main = load("res://scenes/main.tscn").instantiate()
+	_main.pause_on_focus_loss = false
 	add_child(_main)
+	if "--fleet32" in OS.get_cmdline_user_args():
+		_main.menu._frame.get_node("AllyCount").value = 31
+		_main.menu._frame.get_node("EnemyCount").value = 32
 	await _capture("title")
 	_main.menu.show_credits()
 	await _capture("credits")
@@ -29,6 +34,9 @@ func _ready() -> void:
 	await _capture("flight")
 	Input.action_press("scoreboard")
 	await _capture("scoreboard")
+	if GameMatch.pilots.size() > 16:
+		await _key(KEY_END)
+		await _capture("scoreboard-last")
 	Input.action_release("scoreboard")
 	_main.player.take_damage(200)
 	await _capture("destroyed")
@@ -65,9 +73,11 @@ func _ready() -> void:
 
 
 func _capture(caption: String) -> void:
+	DisplayServer.window_move_to_foreground()
 	for _i in 12:
 		await get_tree().process_frame
-	await RenderingServer.frame_post_draw
+	# Force a complete frame even when macOS has occluded the tool window.
+	RenderingServer.force_draw(true)
 	var texture := get_viewport().get_texture().get_image()
 	var path := "%s/%s.png" % [_out, caption]
 	var error := texture.save_png(path)

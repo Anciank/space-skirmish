@@ -1,0 +1,10 @@
+[gd_resource type="FontVariation" load_steps=5 format=3]
+
+[ext_resource type="FontFile" path="res://assets/fonts/NotoSans.ttf" id="1_latin"]
+[ext_resource type="FontFile" path="res://assets/fonts/NotoSansCJKsc-Regular.otf" id="2_cjk"]
+[ext_resource type="FontFile" path="res://assets/fonts/NotoSansArabic.ttf" id="3_arabic"]
+[ext_resource type="FontFile" path="res://assets/fonts/NotoSansDevanagari.ttf" id="4_hindi"]
+
+[resource]
+base_font = ExtResource("1_latin")
+fallbacks = Array[Font]([ExtResource("2_cjk"), ExtResource("3_arabic"), ExtResource("4_hindi")])

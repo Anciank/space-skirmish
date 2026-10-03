@@ -12,8 +12,8 @@ const DISPLAY_MODEL := preload("res://scenes/ships/ship_model.tscn")
 
 enum State { TITLE, PLAYING, PAUSED, RESULTS }
 
-@export var ally_count := 2
-@export var enemy_count := 3
+@export_range(0, 31, 1) var ally_count := 31
+@export_range(0, 32, 1) var enemy_count := 32
 @export var start_in_menu := true
 ## Base AI competence; each pilot rolls a small offset around it.
 @export_range(0.4, 1.8) var ai_skill := 1.0
@@ -26,6 +26,8 @@ enum State { TITLE, PLAYING, PAUSED, RESULTS }
 
 var player: SpaceShip = null
 var paused := false
+## Native review tools can opt out without changing normal focus-loss pausing.
+var pause_on_focus_loss := true
 var state := State.TITLE
 var menu: FlightMenu
 var _preview: ShipVisual
@@ -58,8 +60,21 @@ func _ready() -> void:
 	menu.quit_requested.connect(_quit)
 	_preview = DISPLAY_MODEL.instantiate()
 	_preview.name = "HangarPreview"
+	_preview.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	add_child(_preview)
 	_preview.set_livery(GameConfig.team_color(GameConfig.TEAM_BLUE))
+	# The command display is an isolated ship inspection, clear of field shadows.
+	# Layer 2 keeps its unshadowed key from changing the live battle lighting.
+	for part: Node in _preview.find_children("*", "MeshInstance3D", true, false):
+		(part as MeshInstance3D).layers = 2
+	var inspection_key := (arena.get_node("Sun") as DirectionalLight3D).duplicate() as DirectionalLight3D
+	inspection_key.name = "InspectionKey"
+	inspection_key.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+	inspection_key.light_cull_mask = 2
+	inspection_key.shadow_enabled = false
+	inspection_key.light_energy = 1.85
+	add_child(inspection_key)
+	inspection_key.global_basis = (arena.get_node("Sun") as DirectionalLight3D).global_basis
 	if start_in_menu:
 		_show_title()
 	else:
@@ -68,7 +83,14 @@ func _ready() -> void:
 
 # ================================================================== setup ==
 
-func _start_match() -> void:
+func _start_match(use_preferences := true) -> void:
+	# Menu deployments share the persisted selection. Direct-start scenes
+	# keep their explicit fixture counts for duels, captures and simulations.
+	if start_in_menu and use_preferences:
+		ally_count = int(GameSettings.get_value("ally_count"))
+		enemy_count = int(GameSettings.get_value("enemy_count"))
+	ally_count = clampi(ally_count, GameSettings.MIN_ALLY_COUNT, GameSettings.MAX_ALLY_COUNT)
+	enemy_count = clampi(enemy_count, GameSettings.MIN_ENEMY_COUNT, GameSettings.MAX_ENEMY_COUNT)
 	get_tree().paused = false
 	paused = false
 	state = State.PLAYING
@@ -135,10 +157,12 @@ func _show_title() -> void:
 
 func _animate_preview(delta: float) -> void:
 	_preview_time += delta
+	(get_node("InspectionKey") as DirectionalLight3D).global_basis = rig.camera.global_basis * Basis.looking_at(Vector3(-0.35, -0.5, -1).normalized(), Vector3.UP)
 	_preview.update_motion(0.0, false, delta)
-	_preview.global_transform = rig.camera.global_transform * Transform3D(
-		Basis.from_euler(Vector3(-0.62, -2.55 + sin(_preview_time * 0.18) * 0.16, -0.06)).scaled(Vector3.ONE * 1.6),
-		Vector3(6.8, 3.25 + sin(_preview_time * 0.5) * 0.12, -18.0))
+	var offset := Vector3(6.8, 3.25 + sin(_preview_time * 0.5) * 0.12, -18.0)
+	var inspection_angle := Vector3(8.0 + sin(_preview_time * 0.18) * 0.6, 4.5, -9.0)
+	var pose := Basis.looking_at(offset.normalized(), Vector3.UP) * Basis.looking_at(-inspection_angle.normalized(), Vector3.UP).inverse()
+	_preview.global_transform = rig.camera.global_transform * Transform3D(pose.scaled(Vector3.ONE * 1.6), offset)
 
 
 func _request_transition(destination: String) -> void:
@@ -195,6 +219,7 @@ func _place_ship(ship: SpaceShip) -> void:
 func _bind_player(ship: SpaceShip) -> void:
 	player = ship
 	ship.aim_camera = rig.camera
+	ship.aim_source = rig
 	hud.setup(ship, rig)
 	rig.target = ship
 
@@ -344,9 +369,9 @@ func _explode(position: Vector3, direction: Vector3) -> void:
 		var spark := Spark.new()
 		effects_root.add_child(spark)
 		spark.setup(position + direction * _rng.randf_range(1.0, 7.0), direction, Color(1.0, 0.66, 0.3))
-		spark.life = 0.36
-		spark.start_scale = 1.0
-		spark.end_scale = 6.0
+		spark.life = 0.28
+		spark.start_scale = 0.3
+		spark.end_scale = 0.9
 
 
 # =================================================================== input =
@@ -391,7 +416,7 @@ func _set_paused(on: bool) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_quit()
-	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT and state == State.PLAYING:
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT and pause_on_focus_loss and state == State.PLAYING:
 		_set_paused(true)
 
 

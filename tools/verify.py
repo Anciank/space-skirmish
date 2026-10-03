@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-SUITES = ("input_test", "flight_systems", "audio_mix", "combat_feedback", "round_flow", "smoke_test", "ai_gunnery", "soak_match")
+SUITES = ("input_test", "flight_systems", "camera_stability", "player_gunnery", "audio_mix", "combat_feedback", "round_flow", "localization", "smoke_test", "ai_gunnery", "ai_combat", "soak_match")
 PROBLEMS = re.compile(r"(?m)^(?:SCRIPT ERROR:|ERROR:|WARNING:|\s+FAIL\s)")
 
 

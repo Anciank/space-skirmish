@@ -12,6 +12,7 @@ func _ready() -> void:
 	GameSettings.reset_to_defaults(false)
 	Sfx.set_process(false)
 	_signal_quality()
+	_autocannon_quality()
 	_mixing()
 	_voice_pressure()
 	_engine_response()
@@ -77,6 +78,61 @@ func _mixing() -> void:
 	GameSettings.set_value("master_volume", 0.0, false)
 	_check("master mute covers music and menu sounds", AudioServer.is_bus_mute(0) and Sfx._music_player.bus == "Music" and Sfx._ui_voices[0].bus == "UI")
 	GameSettings.reset_to_defaults(false)
+
+
+func _autocannon_quality() -> void:
+	var shot: AudioStreamWAV = Sfx._bank.laser
+	var heavy: AudioStreamWAV = Sfx._bank.laser_heavy
+	_check("autocannon tails fit two overlapping voices at 20 rounds per second",
+		shot.get_length() >= 0.065 and shot.get_length() < 0.1 and heavy.get_length() < 0.1)
+	var pcm := shot.data
+	var samples := pcm.size() / 2
+	var low := 0.0
+	var high := 0.0
+	var low_power := 0.0
+	var high_power := 0.0
+	var mean := 0.0
+	for i in samples:
+		var value := float(pcm.decode_s16(i * 2)) / 32767.0
+		low = lerpf(low, value, 1.0 - exp(-TAU * 700.0 / Sfx.MIX_RATE))
+		high = lerpf(high, value, 1.0 - exp(-TAU * 1800.0 / Sfx.MIX_RATE))
+		if i < int(Sfx.MIX_RATE * 0.025):
+			low_power += low * low
+			high_power += (value - high) * (value - high)
+		mean += value
+	_check("autocannon has a low receiver body and a broad muzzle crack", low_power > 0.4 and high_power > 0.06)
+	_check("autocannon has no measurable DC bias or abrupt endpoints", absf(mean / samples) < 0.0001
+		and pcm.decode_s16(0) == 0 and absf(float(pcm.decode_s16(pcm.size() - 2)) / 32767.0) < 0.0001)
+	# Sum actual PCM at firing cadence, including a narrow deterministic pitch
+	# variation. Test the mix before the master limiter can hide a clipped shot.
+	var burst := PackedFloat32Array()
+	burst.resize(int(Sfx.MIX_RATE * 2.1))
+	for round_index in 40:
+		var pitch := Sfx._pitch(sin(round_index * 2.1) * 0.25)
+		var onset := int(round_index * Sfx.MIX_RATE * 0.05)
+		for i in int(ceil(samples / pitch)):
+			var source := float(i) * pitch
+			var left := int(source)
+			if left >= samples - 1 or onset + i >= burst.size():
+				break
+			var a := float(pcm.decode_s16(left * 2)) / 32767.0
+			var b := float(pcm.decode_s16((left + 1) * 2)) / 32767.0
+			burst[onset + i] += lerpf(a, b, source - left) * db_to_linear(-7.0)
+	var peak := 0.0
+	var burst_mean := 0.0
+	for sample: float in burst:
+		peak = maxf(peak, absf(sample))
+		burst_mean += sample
+	_check("20 Hz automatic fire has headroom before master limiting", peak > 0.1 and peak < 0.8
+		and absf(burst_mean / burst.size()) < 0.0001 and is_zero_approx(burst[-1]))
+	Sfx.stop_combat_audio()
+	var nodes := Sfx.get_child_count()
+	Sfx.play_local("laser", -7.0)
+	Sfx.play_local("laser", -7.0)
+	_check("adjacent autocannon shots overlap in separate bounded voices",
+		Sfx._local_voices.filter(func(voice: AudioStreamPlayer): return voice.playing).size() == 2
+		and Sfx.get_child_count() == nodes)
+	Sfx.stop_combat_audio()
 
 
 func _voice_pressure() -> void:

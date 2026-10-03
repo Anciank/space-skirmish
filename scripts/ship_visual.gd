@@ -1,13 +1,16 @@
 @tool
 class_name ShipVisual
 extends Node3D
-## Shared interceptor geometry. Hull panels are opaque; only lamps, brief
-## shield impacts and exhaust emit light. Geometry is cached across respawns.
+## Armored corvette: pressure hull, replaceable armor, radiator outriggers,
+## twin autocannons and reaction-control ports. Shared meshes survive respawns.
 
 const JET_SHADER := preload("res://shaders/engine_jet.gdshader")
 const SPRITE_SHADER := preload("res://shaders/soft_sprite.gdshader")
 const SHIELD_SHADER := preload("res://shaders/shield.gdshader")
-const PAINT := ["HullSpine", "WingPivotLeft/WingLeft", "WingPivotRight/WingRight", "FinLeft", "FinRight"]
+const HULL_SHADER := preload("res://shaders/hull_surface.gdshader")
+const PAINT := ["HullSpine", "SquadronBands"]
+const ENGINE_TINT := Color("95c6db")
+const MUZZLE_TINT := Color("ffd4a0")
 
 static var _geometry: Dictionary = {}
 static var _materials: Dictionary = {}
@@ -24,6 +27,11 @@ var _shield_material: ShaderMaterial
 var _shield_timer := 0.0
 var _load := 0.0
 var _jet_length := 0.001
+var _rcs: Array[MeshInstance3D] = []
+var _rcs_directions: Array[Vector3] = []
+var _rcs_material: StandardMaterial3D
+## Hull-space solid bounds used by contact brackets, independent of collision tuning.
+var contact_bounds := AABB()
 
 
 func _ready() -> void:
@@ -33,59 +41,92 @@ func _ready() -> void:
 
 
 func _build() -> void:
-	var titanium := _metal("titanium", Color("b0bac5"), 0.65, 0.4)
-	var carbon := _metal("carbon", Color("151e2a"), 0.5, 0.55)
-	var panel := _metal("panels", Color("d4dbdd"), 0.25, 0.5)
-	var glass := _metal("glass", Color("07202c"), 0.8, 0.13)
+	var alloy := _metal("alloy", Color("767f83"), 0.72, 0.43)
+	var armor := _metal("armor", Color("a2a5a1"), 0.52, 0.52)
+	var graphite := _metal("graphite", Color("22282c"), 0.62, 0.6)
+	var heat_sink := _metal("heat_sink", Color("343537"), 0.75, 0.72)
+	var glass := _metal("optics", Color("101c20"), 0.84, 0.18)
 	var hull_parts: Array = []
-	hull_parts.append([_loft("fuselage", [Vector4(-3.4, 0.08, 0.07, -0.08), Vector4(-2.6, 0.33, 0.18, -0.04), Vector4(-1.25, 0.63, 0.28, 0.0), Vector4(0.6, 0.72, 0.3, 0.0), Vector4(1.65, 0.48, 0.27, 0.0), Vector4(2.0, 0.3, 0.18, 0.0)]), Transform3D.IDENTITY])
 	var dark_parts: Array = []
-	var panel_parts: Array = []
+	var armor_parts: Array = []
+	var machinery: Array = []
+	var radiators: Array = []
+	var markings: Array = []
+	# A blunt armored prow protects the pressure vessel, rather than an aircraft nose.
+	hull_parts.append([_loft("pressure_hull", [Vector4(-3.2, 0.38, 0.31, -0.04), Vector4(-2.65, 0.68, 0.45, 0), Vector4(-1.5, 0.84, 0.49, 0), Vector4(1.45, 0.78, 0.44, 0), Vector4(2.1, 0.48, 0.32, 0)]), Transform3D.IDENTITY])
 	for sign_value: float in [-1.0, 1.0]:
-		var nacelle := _loft("nacelle", [Vector4(-0.9, 0.23, 0.18, 0), Vector4(-0.35, 0.39, 0.3, 0), Vector4(1.55, 0.38, 0.29, 0), Vector4(2.25, 0.31, 0.26, 0)])
-		hull_parts.append([nacelle, Transform3D(Basis.IDENTITY, Vector3(sign_value * 0.94, -0.06, 0))])
-		var pod := _loft("cannon", [Vector4(-2.25, 0.105, 0.09, 0), Vector4(-1.9, 0.22, 0.16, 0), Vector4(0.45, 0.24, 0.19, 0), Vector4(1.38, 0.17, 0.15, 0)])
-		dark_parts.append([pod, Transform3D(Basis.IDENTITY, Vector3(sign_value * 2.42, 0.19, 0))])
-		var intake := _loft("intake", [Vector4(-0.95, 0.16, 0.11, 0), Vector4(-0.8, 0.23, 0.14, 0), Vector4(-0.6, 0.24, 0.14, 0)])
-		dark_parts.append([intake, Transform3D(Basis.IDENTITY, Vector3(sign_value * 0.94, -0.05, 0))])
-		for j in 4:
-			var vent := _box("vent", Vector3(0.46, 0.026, 0.09))
-			dark_parts.append([vent, Transform3D(Basis.IDENTITY, Vector3(sign_value * 0.94, 0.25, 0.5 + j * 0.17))])
-		var wing := _plate("wing%d" % int(sign_value), _mirror([Vector2(0.55, -1.1), Vector2(1.02, -1.32), Vector2(3.36, 1.06), Vector2(3.1, 1.62), Vector2(1.0, 1.0), Vector2(0.55, 0.45)], sign_value), -0.1, 0.13)
-		var pivot := Node3D.new()
-		pivot.name = "WingPivotLeft" if sign_value > 0 else "WingPivotRight"
-		add_child(pivot)
-		_mesh("WingLeft" if sign_value > 0 else "WingRight", wing, panel, pivot)
-		var inset := _plate("wing_inset%d" % int(sign_value), _mirror([Vector2(1.08, -0.78), Vector2(2.75, 0.97), Vector2(2.65, 1.23), Vector2(1.16, 0.76)], sign_value), -0.018, 0.016)
-		panel_parts.append([inset, Transform3D.IDENTITY])
-		var tip := _plate("tip%d" % int(sign_value), _mirror([Vector2(2.87, 0.72), Vector2(3.27, 1.1), Vector2(3.07, 1.48), Vector2(2.89, 1.41)], sign_value), 0.0, 0.024)
-		dark_parts.append([tip, Transform3D.IDENTITY])
-		var fin_mesh := _plate("fin", [Vector2(0.0, 0.42), Vector2(1.08, 1.5), Vector2(0.82, 2.02), Vector2(0.0, 1.81)], 0.0, 0.09, 0.0)
-		var fin := _mesh("FinLeft" if sign_value > 0 else "FinRight", fin_mesh, panel)
-		fin.position = Vector3(sign_value * 0.54, 0.23, 0)
-		fin.rotation.z = deg_to_rad(90.0 - sign_value * 16.0)
-		var fin_cap := _mesh("FinCapLeft" if sign_value > 0 else "FinCapRight", _plate("fin_cap", [Vector2(0.65, 1.25), Vector2(1.03, 1.51), Vector2(0.82, 1.97), Vector2(0.62, 1.87)], 0, 0.095, 0), carbon)
-		fin_cap.transform = fin.transform
 		var suffix := "Left" if sign_value > 0 else "Right"
-		_build_engine(suffix, sign_value)
+		# Segmented armor leaves narrow recesses showing the underlying hull.
+		for j in 5:
+			var z := -2.65 + float(j) * 0.87
+			if sign_value > 0:
+				armor_parts.append([_loft("armor_section%d" % j, [Vector4(z, 0.57 if j == 0 else 0.81, 0.085, 0.48), Vector4(z + 0.76, 0.79, 0.09, 0.48)]), Transform3D.IDENTITY])
+			armor_parts.append([_box("side_armor", Vector3(0.11, 0.5, 0.7)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 0.79, 0, z + 0.42))])
+		var nacelle := _loft("drive_housing", [Vector4(-0.7, 0.3, 0.29, 0), Vector4(-0.36, 0.48, 0.38, 0), Vector4(1.75, 0.46, 0.36, 0), Vector4(2.28, 0.39, 0.34, 0)])
+		hull_parts.append([nacelle, Transform3D(Basis.IDENTITY, Vector3(sign_value * 1.18, -0.05, 0))])
+		machinery.append([_box("drive_mount", Vector3(0.48, 0.38, 1.6)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 0.87, -0.12, 0.8))])
+		# Cannons have feed housings, cooling sleeves and exposed barrels.
+		dark_parts.append([_loft("gun_breech", [Vector4(-1.82, 0.18, 0.19, 0), Vector4(-1.5, 0.29, 0.24, 0), Vector4(0.2, 0.3, 0.25, 0), Vector4(0.68, 0.22, 0.2, 0)]), Transform3D(Basis.IDENTITY, Vector3(sign_value * 2.04, 0.02, 0))])
+		machinery.append([_box("gun_mount", Vector3(0.7, 0.28, 0.62)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 1.55, 0.04, -1.12))])
+		for j in 3:
+			machinery.append([_box("feed_segment", Vector3(0.28, 0.13, 0.16)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 1.86, 0.29, -0.54 + j * 0.24))])
+		var barrel := _mesh("CannonBarrel" + suffix, _cylinder("barrel", 0.08, 0.11, 1.28), alloy)
+		barrel.position = Vector3(sign_value * 2.04, 0.02, -2.38)
+		barrel.rotation.x = PI * 0.5
+		var sleeve := _mesh("CannonSleeve" + suffix, _cylinder("sleeve", 0.14, 0.17, 0.46), graphite)
+		sleeve.position = Vector3(sign_value * 2.04, 0.02, -1.91)
+		sleeve.rotation.x = PI * 0.5
 		var muzzle := Node3D.new()
 		muzzle.name = "Muzzle" + suffix
-		muzzle.position = Vector3(sign_value * 2.42, 0.19, -2.34)
+		muzzle.position = Vector3(sign_value * 2.04, 0.02, -3.05)
 		add_child(muzzle)
-		var flash := _mesh("MuzzleFlash" + suffix, _quad(), _sprite(Color("9edbff"), 2.5, 0.8))
-		flash.position = muzzle.position
-		flash.scale = Vector3.ONE * 0.65
+		var bore := _mesh("CannonBore" + suffix, _cylinder("bore", 0.065, 0.065, 0.012), graphite)
+		bore.position = muzzle.position
+		bore.rotation.x = PI * 0.5
+		var flash := _mesh("MuzzleFlash" + suffix, _quad(), _sprite(MUZZLE_TINT, 2.8, 0.25))
+		flash.position = muzzle.position + Vector3(0, 0, -0.12)
+		flash.scale = Vector3.ONE * 0.38
 		flash.visible = false
 		_flashes.append(flash)
-		var lamp := _mesh("WingLamp" + suffix, _box("lamp", Vector3(0.08, 0.04, 0.28)), _lamp(Color("70dfe7") if sign_value > 0 else Color("ff7959"), 1.4))
-		lamp.position = Vector3(sign_value * 3.1, 0.11, 1.04)
-	_mesh("HullBody", _join("hull", hull_parts), titanium)
-	_mesh("HullDark", _join("dark", dark_parts), carbon)
-	_mesh("InsetPanels", _join("insets", panel_parts), panel)
-	_mesh("Canopy", _loft("canopy", [Vector4(-2.06, 0.15, 0.035, 0.2), Vector4(-1.64, 0.31, 0.18, 0.3), Vector4(-0.68, 0.38, 0.26, 0.36), Vector4(-0.28, 0.26, 0.07, 0.32)]), glass)
-	_mesh("HullSpine", _loft("spine", [Vector4(-0.22, 0.28, 0.024, 0.315), Vector4(0.3, 0.3, 0.04, 0.32), Vector4(1.44, 0.15, 0.024, 0.3)]), panel)
-	var sensor := _mesh("Sensor", _box("sensor", Vector3(0.18, 0.018, 0.035)), _lamp(Color("73cce3"), 0.75))
-	sensor.position = Vector3(0, 0.39, -1.78)
+		# Heat exchangers need area in vacuum. Thick booms support rectangular banks.
+		machinery.append([_box("radiator_boom", Vector3(1.12, 0.16, 0.21)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 2.0, -0.08, 1.12))])
+		var radiator := _plate("radiator%d" % int(sign_value), _mirror([Vector2(1.92, 0.32), Vector2(2.9, 0.32), Vector2(2.9, 1.95), Vector2(1.92, 1.95)], sign_value), -0.02, 0.065, 0)
+		radiators.append([radiator, Transform3D.IDENTITY])
+		for j in 9:
+			machinery.append([_box("radiator_rib", Vector3(0.94, 0.024, 0.045)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 2.41, 0.028, 0.4 + j * 0.18))])
+		for j in 6:
+			dark_parts.append([_box("drive_vent", Vector3(0.48, 0.035, 0.085)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 1.18, 0.338, 0.32 + j * 0.2))])
+		markings.append([_box("identity_band", Vector3(0.66, 0.02, 0.14)), Transform3D(Basis.IDENTITY, Vector3(sign_value * 1.18, 0.346, -0.12))])
+		_build_engine(suffix, sign_value, alloy, graphite)
+		var nav := _mesh("NavigationLight" + suffix, _box("navigation_lamp", Vector3(0.045, 0.035, 0.1)), _lamp(Color("d85c4f") if sign_value < 0 else Color("71b8a0"), 0.6))
+		nav.position = Vector3(sign_value * 2.91, 0.045, 1.84)
+		# Opposing thruster ports show lateral/vertical/reverse control forces.
+		for z: float in [-2.1, 1.6]:
+			_build_rcs(Vector3(sign_value * 0.92, 0.03, z), Vector3(sign_value, 0, 0), graphite)
+			_build_rcs(Vector3(sign_value * 0.6, 0.61, z), Vector3.UP, graphite)
+			_build_rcs(Vector3(sign_value * 0.6, -0.51, z), Vector3.DOWN, graphite)
+		_build_rcs(Vector3(sign_value * 1.18, -0.05, -0.78), Vector3.FORWARD, graphite)
+	# Restore a real base surface when the damage flash override is removed.
+	var hull_mesh := _join("corvette_hull", hull_parts)
+	hull_mesh.surface_set_material(0, alloy)
+	_mesh("HullBody", hull_mesh, null)
+	_mesh("ArmorPanels", _join("corvette_armor", armor_parts), armor)
+	_mesh("HullDark", _join("corvette_recesses", dark_parts), graphite)
+	_mesh("Machinery", _join("corvette_machinery", machinery), alloy)
+	_mesh("RadiatorBanks", _join("corvette_radiators", radiators), heat_sink)
+	_mesh("SquadronBands", _join("corvette_markings", markings), armor)
+	_mesh("HullSpine", _loft("dorsal_spine", [Vector4(-0.9, 0.33, 0.025, 0.61), Vector4(0.7, 0.33, 0.03, 0.62), Vector4(1.4, 0.18, 0.025, 0.58)]), armor)
+	_mesh("Canopy", _loft("sensor_bridge", [Vector4(-2.4, 0.15, 0.04, 0.58), Vector4(-2.02, 0.28, 0.15, 0.65), Vector4(-1.25, 0.28, 0.14, 0.65), Vector4(-1.04, 0.18, 0.04, 0.6)]), glass)
+	var mast := _mesh("SensorMast", _box("sensor_mast", Vector3(0.09, 0.38, 0.1)), graphite)
+	mast.position = Vector3(0.25, 0.82, 0.2)
+	var sensor := _mesh("Sensor", _box("sensor_array", Vector3(0.34, 0.1, 0.16)), alloy)
+	sensor.position = Vector3(0.25, 1.03, 0.2)
+	var lens := _mesh("SensorOptic", _box("sensor_lens", Vector3(0.08, 0.028, 0.025)), _lamp(Color("adc8cd"), 0.4))
+	lens.position = Vector3(0.25, 1.03, 0.106)
+	for part: Node in get_children():
+		if part is MeshInstance3D and not (_jets.has(part) or _cores.has(part) or _flashes.has(part) or _rcs.has(part)):
+			var solid := part as MeshInstance3D
+			contact_bounds = contact_bounds.merge(solid.transform * solid.mesh.get_aabb())
 	_shield_material = ShaderMaterial.new()
 	_shield_material.shader = SHIELD_SHADER
 	var shell := SphereMesh.new()
@@ -94,85 +135,107 @@ func _build() -> void:
 	shell.radial_segments = 32
 	shell.rings = 16
 	_shield = _mesh("ShieldImpact", shell, _shield_material)
-	_shield.scale = Vector3(1.27, 0.38, 1.3)
+	_shield.scale = Vector3(1.14, 0.46, 1.28)
 	_shield.visible = false
 	_shield.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
-func _build_engine(suffix: String, sign_value: float) -> void:
-	var at := Vector3(sign_value * 0.94, -0.06, 2.26)
-	var bell := CylinderMesh.new()
-	bell.top_radius = 0.33
-	bell.bottom_radius = 0.3
-	bell.height = 0.34
-	bell.radial_segments = 12
-	var nozzle := _mesh("Nozzle" + suffix, bell, _metal("nozzle", Color("596575"), 0.8, 0.38))
+func _build_engine(suffix: String, sign_value: float, alloy: Material, graphite: Material) -> void:
+	var at := Vector3(sign_value * 1.18, -0.05, 2.29)
+	var nozzle := _mesh("Nozzle" + suffix, _cylinder("engine_bell", 0.35, 0.4, 0.4), alloy)
 	nozzle.rotation.x = PI * 0.5
 	nozzle.position = at
-	var core := SphereMesh.new()
-	core.radius = 0.23
-	core.height = 0.46
-	core.radial_segments = 16
-	core.rings = 8
-	var glow := _mesh("EngineGlow" + suffix, core, null)
-	glow.position = at + Vector3(0, 0, 0.19)
-	glow.scale.z = 0.15
+	for j in 3:
+		var collar := _mesh("EngineCollar" + suffix + str(j), _cylinder("engine_collar", 0.405, 0.405, 0.05), graphite)
+		collar.position = at + Vector3(0, 0, -0.13 + j * 0.12)
+		collar.rotation.x = PI * 0.5
+	var glow := _mesh("EngineGlow" + suffix, _cylinder("engine_core", 0.29, 0.29, 0.018), null)
+	glow.rotation.x = PI * 0.5
+	glow.position = at + Vector3(0, 0, 0.21)
 	glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_cores.append(glow)
 	var jet := CylinderMesh.new()
-	jet.top_radius = 0.02
-	jet.bottom_radius = 0.28
+	jet.top_radius = 0.015
+	jet.bottom_radius = 0.29
 	jet.height = 1.0
 	jet.radial_segments = 20
 	jet.rings = 8
 	jet.cap_top = false
 	jet.cap_bottom = false
-	var mesh := _join("jet", [[jet, Transform3D(Basis(Vector3.RIGHT, PI * 0.5), Vector3.ZERO)]])
+	var mesh := _join("drive_jet", [[jet, Transform3D(Basis(Vector3.RIGHT, PI * 0.5), Vector3.ZERO)]])
 	var burner := _mesh("Burner" + suffix, mesh, null)
-	burner.position = at + Vector3(0, 0, 0.65)
+	burner.position = at + Vector3(0, 0, 0.7)
 	burner.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_jets.append(burner)
 	var light := OmniLight3D.new()
 	light.name = "EngineLight" + suffix
 	light.position = at + Vector3(0, 0, 0.45)
-	light.omni_range = 4.0
-	light.light_energy = 0.25
+	light.omni_range = 2.3
+	light.light_energy = 0.1
 	light.shadow_enabled = false
 	add_child(light)
 	_lights.append(light)
 
 
+func _build_rcs(at: Vector3, exhaust_direction: Vector3, material: Material) -> void:
+	var orientation := Basis(Quaternion(Vector3.UP, exhaust_direction))
+	var port := _mesh("RCSPort%d" % _rcs.size(), _cylinder("rcs_port", 0.06, 0.085, 0.1), material)
+	port.transform = Transform3D(orientation, at)
+	var core := _mesh("RCSJet%d" % _rcs.size(), _cylinder("rcs_core", 0.025, 0.05, 0.18), null)
+	core.transform = Transform3D(orientation, at + exhaust_direction * 0.09)
+	core.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	core.visible = false
+	_rcs.append(core)
+	_rcs_directions.append(exhaust_direction)
+
+
+static func _cylinder(key: String, top: float, bottom: float, height_value: float) -> CylinderMesh:
+	if not _geometry.has(key):
+		var cylinder := CylinderMesh.new()
+		cylinder.top_radius = top
+		cylinder.bottom_radius = bottom
+		cylinder.height = height_value
+		cylinder.radial_segments = 16
+		_geometry[key] = cylinder
+	return _geometry[key]
+
+
 func set_livery(color: Color) -> void:
-	var paint := _metal("paint" + color.to_html(), color.lerp(Color("243248"), 0.22), 0.38, 0.48)
+	# Identification is paint. Drive and ammunition colors belong to their systems.
+	var paint := _metal("paint" + color.to_html(), color.lerp(Color("5c686b"), 0.58), 0.35, 0.57)
 	for path: String in PAINT:
 		(get_node(path) as MeshInstance3D).material_override = paint
-	var tint := color.lerp(Color("73d7ff"), 0.65)
-	_core_material = _lamp(tint, 1.8).duplicate()
+	_core_material = _lamp(ENGINE_TINT, 0.75)
+	_rcs_material = _lamp(ENGINE_TINT, 1.0)
 	_jet_material = ShaderMaterial.new()
 	_jet_material.shader = JET_SHADER
-	_jet_material.set_shader_parameter("tint", tint)
+	_jet_material.set_shader_parameter("tint", ENGINE_TINT)
 	for core: MeshInstance3D in _cores:
 		core.material_override = _core_material
 	for jet: MeshInstance3D in _jets:
 		jet.material_override = _jet_material
 	for light: OmniLight3D in _lights:
-		light.light_color = tint
-	for flash: MeshInstance3D in _flashes:
-		(flash.material_override as ShaderMaterial).set_shader_parameter("tint", tint)
-	_shield_material.set_shader_parameter("tint", color.lerp(Color("c4edff"), 0.25))
+		light.light_color = ENGINE_TINT
+	for port: MeshInstance3D in _rcs:
+		port.material_override = _rcs_material
+	_shield_material.set_shader_parameter("tint", Color("9dbccf"))
 
 
-func update_motion(throttle_value: float, boosting: bool, delta: float) -> void:
-	_load = lerpf(_load, absf(throttle_value), clampf(delta * 8.0, 0, 1))
-	_core_material.emission_energy_multiplier = 1.25 + _load * 0.7 + (0.5 if boosting else 0.0)
-	_jet_length = lerpf(_jet_length, 2.8 if boosting else 0.001, clampf(delta * 14.0, 0, 1))
-	_jet_material.set_shader_parameter("power", 1.5 + _load * 0.4)
+func update_motion(throttle_value: float, boosting: bool, delta: float, maneuver := Vector2.ZERO) -> void:
+	var drive_boost := boosting and throttle_value > 0.02
+	_load = lerpf(_load, maxf(throttle_value, 0.0), clampf(delta * 8.0, 0, 1))
+	_core_material.emission_energy_multiplier = 0.4 + _load * 0.65 + (0.4 if drive_boost else 0.0)
+	_jet_length = lerpf(_jet_length, 2.4 if drive_boost else maxf(0.001, _load * 0.72), clampf(delta * 14.0, 0, 1))
+	_jet_material.set_shader_parameter("power", 0.7 + _load * 0.25 + (0.3 if drive_boost else 0.0))
 	for jet: MeshInstance3D in _jets:
 		jet.scale = Vector3(1.0, 1.0, maxf(_jet_length, 0.001))
-		jet.position.z = 2.48 + _jet_length * 0.5
+		jet.position.z = 2.52 + _jet_length * 0.5
 		jet.visible = _jet_length > 0.06
 	for light: OmniLight3D in _lights:
-		light.light_energy = 0.25 + _load * 0.35 + (0.25 if boosting else 0.0)
+		light.light_energy = 0.04 + _load * 0.12 + (0.1 if drive_boost else 0.0)
+	var thrust := Vector3(maneuver.x, maneuver.y, maxf(-throttle_value, 0.0))
+	for i in _rcs.size():
+		_rcs[i].visible = _rcs_directions[i].dot(thrust) < -0.08
 	for i in _flashes.size():
 		if not _fresh_flash[i]:
 			_flash_timers[i] = maxf(_flash_timers[i] - delta, 0.0)
@@ -181,7 +244,7 @@ func update_motion(throttle_value: float, boosting: bool, delta: float) -> void:
 		(_flashes[i].material_override as ShaderMaterial).set_shader_parameter("opacity", _flash_timers[i] / 0.06)
 	_shield_timer = maxf(_shield_timer - delta, 0.0)
 	_shield.visible = _shield_timer > 0.0
-	_shield_material.set_shader_parameter("pulse", pow(_shield_timer / 0.32, 1.5))
+	_shield_material.set_shader_parameter("pulse", _shield_timer / 0.32)
 
 
 func flash_muzzle(index: int) -> void:
@@ -193,7 +256,7 @@ func flash_muzzle(index: int) -> void:
 
 func flash_shield(local_hit: Vector3) -> void:
 	_shield_timer = 0.32
-	_shield_material.set_shader_parameter("hit_direction", local_hit.normalized() if local_hit.length_squared() > 0.01 else Vector3.FORWARD)
+	_shield_material.set_shader_parameter("hit_direction", _shield.to_local(to_global(local_hit)).normalized() if local_hit.length_squared() > 0.01 else Vector3.FORWARD)
 	_shield.visible = true
 
 
@@ -215,12 +278,13 @@ func _mesh(node_name: String, mesh: Mesh, material: Material, parent: Node = sel
 	return instance
 
 
-static func _metal(key: String, color: Color, metallic: float, roughness: float) -> StandardMaterial3D:
+static func _metal(key: String, color: Color, metallic: float, roughness: float) -> ShaderMaterial:
 	if not _materials.has(key):
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = color
-		mat.metallic = metallic
-		mat.roughness = roughness
+		var mat := ShaderMaterial.new()
+		mat.shader = HULL_SHADER
+		mat.set_shader_parameter("base_color", color)
+		mat.set_shader_parameter("metalness", metallic)
+		mat.set_shader_parameter("surface_roughness", roughness)
 		_materials[key] = mat
 	return _materials[key]
 

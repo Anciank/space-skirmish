@@ -1,13 +1,23 @@
 # Star Skirmish
 
-A native 3D space combat game in Godot 4. Join Azure squadron in a three-on-three
-Newtonian dogfight, with twin autocannons, destructible asteroids, gravity wells,
-and a bounded arena. Ships, scenery and sound effects are generated in code.
-The interceptor has swept wings, a faceted canopy and separate team paint.
-Boost plumes, cannon flashes, local shield impacts and fading explosion
-fragments provide combat feedback; the scenery includes craters, irregular
-rocks and thin atmospheric rims.
+A native 3D space combat game in Godot 4. Join Azure squadron in a configurable
+Newtonian skirmish with twin autocannons, destructible asteroids, gravity anchors,
+and a bounded combat volume. Ships, scenery and sound effects are generated in code.
 
+The art direction is restrained industrial science fiction inspired by EVE Online.
+The original AZ-00 corvette has a blunt pressure hull, segmented metal armor,
+exposed cannon barrels and feed mechanisms, radiator banks, sensors, and opposing
+reaction-control ports. Squadron colors appear on identification bands; both sides
+use the same cool drive plasma and warm kinetic tracers. Main-drive plumes follow
+forward thrust, and reaction-control jets fire opposite lateral, vertical and reverse
+commands. Short local shield ripples, impact ejecta and drifting metal fragments
+communicate damage without covering ships in constant glow.
+
+A single warm sun lights ships, rocks and the distant planet consistently. The
+planet sits in the sky at astronomical distance, while local airless rubble has
+matching collision hulls. Muted dust lanes, sparse fixed stars and a proximity-only
+combat boundary replace the bright nebula and visible grid cage. Menus and flight
+instruments use graphite panels, fine rules and restrained status colors.
 The command screen introduces the mission and offers Cadet, Pilot and Ace
 difficulty. The flight handbook explains controls and tactics. Pause includes
 live squadron standings, settings, restart and return to command. Every round
@@ -39,6 +49,7 @@ godot --path . # or open project.godot in the Godot editor and press F5
 | `Esc` | Pause / resume; return from handbook or settings |
 | `F5` | Restart the current sortie |
 | Hold `\` | Live scoreboard |
+| `Page Up` / `Page Down`, mouse wheel | Change scoreboard page while open |
 
 A gamepad works too: right stick aims in all four directions, left stick rolls
 and strafes, triggers thrust, `A` fires, `B` brakes, right bumper cycles targets,
@@ -46,8 +57,24 @@ Start pauses, and Back opens the scoreboard. Menus support mouse, keyboard and
 gamepad focus navigation. Losing application focus pauses a running sortie.
 
 Settings apply during play and persist locally: mouse sensitivity, invert
-pitch, hints, master, weapons, engine and music volume, field of view, camera shake and fullscreen. Invalid
-saved values recover to safe defaults or supported ranges.
+mouse up/down, invert Q/E roll, hints, master, weapons, engine and music volume, field of view, camera
+shake, fullscreen and interface language. Invalid saved values recover to safe
+defaults or supported ranges.
+
+Choose **Interface language** in Settings to change menus, flight instruments,
+combat messages and debriefs immediately. The selection stays on this device;
+changing it during pause preserves the paused battle and menu focus. Languages
+are listed by their native names: English, 简体中文 (Simplified Chinese), Español
+(Spanish), हिन्दी (Hindi), العربية (Arabic), Português (Brasil), Français
+(French), Deutsch (German), 日本語 (Japanese), 한국어 (Korean), Русский (Russian),
+and Bahasa Indonesia. Arabic text is shaped and read from right to left, with
+stable pilot callsigns and numerical readouts.
+
+The game bundles Noto fonts for Latin, Cyrillic, Chinese, Japanese, Korean,
+Arabic and Devanagari, so these languages render without installed system
+fonts. Font licenses appear in Credits and in `assets/fonts/`. Translation
+catalogues live in `translations/`, keyed by the English source text; missing
+entries fall back to English.
 
 ## How it plays
 
@@ -56,60 +83,88 @@ is weak, the afterburner is strong, and coasting drag is deliberately gentle, so
 the fastest way to turn is to keep your nose on the target and let the ship drift
 sideways.
 
+Mouse up/down can pitch through complete turns continuously. Aim turns around
+the ship's own axes, so controls keep their screen direction while banked,
+inverted, or passing straight up or down. Vertical aim inversion also applies
+to the gamepad; Q/E roll inversion is separate and both preferences are saved.
+
 Damage splits into shields first, then hull. Shields regenerate after a few
-seconds without being hit; hull does not. Ram a planet or a rock at speed and
+seconds without being hit; hull does not. Ram a gravity anchor or a rock at speed and
 you will hurt yourself as much as the thing you hit — the momentum is split
 between the two bodies.
 
-Six ships fight in a 900 m sphere: you and two allies against three hostiles.
+Choose the NPC counts on the command screen: 0–31 allies and 0–32 hostiles, plus
+your own ship. The default is 32 versus 32 in a 900 m sphere. Counts are
+saved on this device and applied when deploying or restarting a sortie. Choose
+zero hostiles for a practice flight; pause and debrief tables scroll to show a
+full 64-ship roster.
 Kills score for the team; the higher tally when the five-minute clock runs out
 wins. Everyone respawns four seconds after dying. Combat, scoring and redeploys
 stop at the debrief. Replay creates a fresh roster and clears old projectiles.
 Pilot records and projectile credit survive ship replacements.
 
+AI pilots reassess targets by range, enemy aim, recent attacks and remaining
+defenses. They keep a lock unless another contact is meaningfully better. In a
+fight they match the target's movement, correct their range, and orbit with the
+thrusters while tracking the cannon lead point. Close passes and urgent hazards
+take priority over shooting. Pilots use the burner for aligned approaches and
+breakaways, steer around rocks and other hulls, and brake before the arena edge.
+
+Incoming hostile rounds and recent hits prompt short sideways dodges; harmless,
+friendly and expiring rounds do not. Critical defenses cause a retreat, followed
+by a return after shield recovery or a time limit. A cooldown prevents repeated
+retreats from keeping a damaged pilot out of combat. Cadet, Pilot and Ace change
+decision timing, turning speed, aim error and burst pauses. All pilots use the
+same flight, shield and projectile rules as the player.
+
 The target panel reports projectile reach and obstructions, and hides the lead
-pip while the firing line is blocked. Radar follows the ship through yaw,
+pip while the firing line is blocked. Contact brackets project the complete hull
+bounds, including radiator banks and the prow. Radar follows the ship through yaw,
 pitch and roll; allies use circles and hostiles use diamonds. Hit, kill, lock,
 critical hull, boost, redeployment and debrief cues support the visual feedback.
 A quiet original synth score changes its mix between command and combat.
 
-The arena has small planets with gravity wells strong enough to bend your flight
-path into an orbit if you fly too close, and a few of them have moons. Rocks are
-destructible: enough sustained fire shatters the smaller ones, and they respawn
-elsewhere after a while.
-
+The debris field includes dense gravity anchors that bend your flight path when
+you pass close. Nearby companion rocks are airless local obstacles. The distant
+planet is a visual backdrop. Smaller asteroids shatter into cold mineral fragments
+under sustained fire and respawn elsewhere after a while.
 ## Layout
 
 ```
 scripts/
   game_config.gd    tuning table: every balance number in one place
   game_settings.gd  validated preferences, atomic local persistence
+  l10n.gd           twelve language catalogues, text shaping and bundled fonts
   game_input.gd     builds the whole input map at runtime
   game_match.gd     clock, scores, kill feed and persistent pilot ledger
   flight_menu.gd    command, handbook, settings, pause and debrief screens
-  gunnery.gd        shared intercept solver with inherited bolt velocity
-  ship_visual.gd    cached interceptor meshes, livery and combat feedback
+  gunnery.gd        shared intercept solver and ballistic path safety
+  ship_visual.gd    cached corvette meshes, livery, drives and reaction-control ports
   space_ship.gd     flight model, shields/hull, autocannon  (base class)
   player_ship.gd    mouse aim + throttle, cockpit/chase toggle
   ai_ship.gd        patrol → engage → evade → retreat state machine
   laser_bolt.gd     raycast-per-frame projectile (cannot tunnel)
-  arena.gd          builds rocks, planets, moons, boundary; spawn selection
-  star_body.gd      planet/moon mesh + gravity well
+  arena.gd          builds debris, gravity anchors and boundary; spawn selection
+  star_body.gd      airless gravity-anchor mesh and collision + gravity well
   asteroid.gd       tumbling destructible rock
-  camera_rig.gd     chase camera with damped roll and obstacle avoidance
+  camera_rig.gd     smooth chase/cockpit follow, obstacle avoidance and bounded feedback
   hud.gd            all 2D readouts, drawn in _draw()
   sfx.gd            synthesises every sound effect at boot
-  mesh_factory.gd   noise-displaced rock/planet meshes
-  starfield.gd      2600 stars in a single draw call
+  mesh_factory.gd   shared procedural surface helpers and tracer materials
+  starfield.gd      sparse fixed stars in a single draw call
   main.gd           session state, spawning, respawns, pause and replay
+translations/       twelve UTF-8 JSON catalogues with English source keys
+assets/fonts/       bundled Noto fonts, source metadata and font licenses
 shaders/
-  space_sky.gdshader   static dust clouds and distant sun
-  rock_surface.gdshader object-space rock, moon and planet surface detail
-  atmosphere.gdshader  thin atmosphere and explosion shock fronts
+  space_sky.gdshader   muted dust lane, distant planet and shared sun direction
+  hull_surface.gdshader machined metal finish, panel seams and local impact heat
+  rock_surface.gdshader object-space mineral, cracks and crater surface detail
+  atmosphere.gdshader  optional thin atmospheric rim
   engine_jet.gdshader  fading boost plumes
   shield.gdshader      brief rim and local hit response
   soft_sprite.gdshader stars, cannon and impact flashes, explosion sparks
-  boundary.gdshader    arena shell: lat/long grid, fresnel rim, danger tint
+  debris_surface.gdshader lit mineral fragments with finite alpha fade
+  boundary.gdshader    subtle proximity warning at the combat-volume edge
 ```
 
 ## Tests
@@ -120,7 +175,7 @@ Run the complete verification gate from a clean checkout:
 python3 tools/verify.py
 ```
 
-It imports the project, checks suite scripts before running them, then runs eight
+It imports the project, checks suite scripts before running them, then runs twelve
 headless suites at a fixed 60 FPS simulation timestep. It rejects failed
 assertions, script errors, engine errors, warnings and resource leaks. Logs are
 saved in a temporary directory. Use `--suite round_flow` to run one suite, or
@@ -130,11 +185,15 @@ Suites can also be run individually after importing the project:
 
 ```bash
 godot --headless --editor --import --quit     # needed on a fresh checkout
-godot --headless res://tests/input_test.tscn    # 35 checks, real key bindings
-godot --headless res://tests/smoke_test.tscn    # 80 checks, full match loop
+godot --headless res://tests/input_test.tscn    # real key bindings
+godot --headless res://tests/smoke_test.tscn    # full match loop
 godot --headless res://tests/ai_gunnery.tscn    # focused AI duel
+godot --headless --fixed-fps 60 res://tests/ai_combat.tscn # tactical decisions and safe flight
 godot --headless res://tests/round_flow.tscn    # real menu and round transitions
+godot --headless res://tests/localization.tscn # twelve languages, live switching and fonts
 godot --headless res://tests/flight_systems.tscn # flight/resource/gunnery regressions
+godot --headless res://tests/camera_stability.tscn # smooth movement and firing at 30/60/144 FPS
+godot --headless --fixed-fps 60 res://tests/player_gunnery.tscn # aim assistance and real moving-target hits
 godot --headless res://tests/audio_mix.tscn # signal quality, mixing and voice pressure
 godot --headless res://tests/combat_feedback.tscn # reach, occlusion, radar and death causes
 godot --headless --fixed-fps 60 res://tests/soak_match.tscn # full five-minute round
@@ -159,14 +218,42 @@ failures that a stationary target alone can hide. It also checks the hull
 retreat threshold, immediate breakaway, stable retreat and boost release when
 shields recover.
 
+`ai_combat` checks target switching and lock stability, pursuit of a moving
+contact, threat-driven dodges and their cooldowns, and firing from the active
+cannon along the predicted shot path. Real physics fixtures cover rocks,
+friendly hulls and teammates crossing that path. The suite also checks gun
+cooldown, obstacle avoidance with continued forward progress, braking before
+the boundary, returning from a retreat without immediately restarting it, and
+clearing tactical state on respawn. A freed target must stop stale shots and
+allow a living hostile to replace the old lock safely.
+
 `round_flow` activates native menu buttons through real Enter/Escape events.
 It checks deployment, frozen clock and physics during pause, settings reload
 and recovery, repeated respawns, final statistics, draw results, replay and
-return to command. Test preferences use an isolated file.
+return to command. NPC-count checks cover keyboard selection, saved counts,
+safe numeric limits, the default 32-versus-32 fleet, custom fleets, zero-hostile practice and full-roster
+standings scrolling. Test preferences use an isolated file.
 
-`flight_systems` checks radians and frame-independent mouse aim, signed gamepad
-events, spawn orientation, shield recovery, booster acceleration and recharge,
-spherical containment, physical impact damage, rock surface contacts, camera
+`localization` checks every catalogue against the English source keys, formatting
+arguments and bundled glyph coverage. It switches all twelve languages through
+the real menus and checks canvas bounds, complete wrapped instructions, heading
+clearance, translated HUD shaping and existing combat messages. It also checks
+settings focus, native language names, stable
+callsigns, pause preservation, saved language preferences and invalid-value
+recovery. Test preferences use an isolated file.
+
+`camera_stability` checks smooth cruise, boost and turning at 30, 60 and 144 FPS,
+continuous Q/E rolls through multiple revolutions at level and nearly vertical
+attitudes, simultaneous pitch/yaw/roll, smooth auto-leveling near vertical and
+inverted attitudes, rendered hull alignment, steady sustained fire, rigid cockpit attachment,
+teleports, camera toggles, respawns and bounded impact feedback. Disabling camera
+shake clears the lens immediately; cosmetic feedback cannot steer the guns.
+
+`flight_systems` checks radians and frame-independent mouse aim, complete pitch
+loops at 30/60/144 render rates and 60 physics ticks, local controls through poles
+and inverted attitudes, signed gamepad events, spawn orientation, shield recovery, booster acceleration and recharge,
+spherical containment, physical impact damage, rock surface contacts, clear asteroid respawns,
+logical drive/identification feedback, camera
 stability under sustained recoil at uncapped frame rates, and projectile credit
 after the shooter is freed. `soak_match` advances the entire five-minute battle with normal
 physics steps and checks roster validity, finite transforms, bounded effects,
@@ -175,7 +262,10 @@ For difficulty audits, run `soak_match` with `-- --difficulty=0 --seed=20261002`
 (0 Cadet, 1 Pilot, 2 Ace). The log includes shots, hits, damage, deaths and scores.
 
 `audio_mix` checks signal headroom, DC offset, pitch, loop seams, bus isolation,
-critical cues under voice pressure and engine smoothing at 30 and 240 FPS.
+critical cues under voice pressure, 20 Hz autocannon overlap and engine smoothing
+at 30 and 240 FPS. `player_gunnery` checks bounded assistance, unobstructed muzzle
+intercepts, friend crossing safety, moving-target hits and consistent firing
+cadence at different physics step rates.
 `combat_feedback` checks real physics obstructions, weapon reach, moving target
 guidance, radar orientation and collision attribution through the main scene.
 
@@ -188,7 +278,7 @@ templates. Presets are tracked; generated builds are ignored. Build and verify:
 python3 tools/build_release.py --native
 ```
 
-The gate runs all eight gameplay suites, exports the shipping pack, verifies
+The gate runs all twelve gameplay suites, exports the shipping pack, verifies
 every packed resource checksum and excludes tests, tools and captures. A
 separate QA pack drives the release template through menu, settings, flight,
 pause, scoring, debrief, replay and quit; the builder verifies that its runtime
@@ -228,16 +318,29 @@ with the configured renderer:
 godot --path . res://tools/menu_capture.tscn -- /tmp/star-skirmish-review
 ```
 
+Add `--fleet32` after the output path to select and save 32 versus 32 through
+the command screen. Large fleets also capture the last scoreboard page.
+
 Use `--rendering-method gl_compatibility --rendering-driver opengl3` to review
 the compatibility renderer, or `--resolution 800x450` to review the minimum
 window size.
 
 Capture close views of both sides of the ship, boost, firing, shield impacts,
-three explosion phases, planets, moons and rocks:
+three explosion phases, gravity anchors and rocks:
 
 ```bash
 godot --path . res://tools/visual_review.tscn -- /tmp/star-skirmish-art
 ```
+
+Review the distant planet, gravity anchors and cold asteroid fragments:
+
+```bash
+godot --path . res://tools/environment_review.tscn -- /tmp/star-skirmish-environment
+```
+
+Visual review tools force a completed render frame and opt out of focus-loss
+pausing for that process. Add `--audio-driver Dummy` before the scene argument
+when reviewing images without native audio.
 
 Measure the native six-ship battle with a two-second warmup and ten-second
 sample. The tool disables VSync for that process and writes JSON plus the final
@@ -268,20 +371,46 @@ uncompressed mixed audio; a `.png` output creates a frame sequence plus WAV.
 ## Notes on a few decisions
 
 **Bolts are raycasts, not physics bodies.** Each bolt casts a ray from its
-previous position to its next one every physics frame. At 320 m/s a body-based
+previous position to its next one every physics frame. At 620 m/s a body-based
 projectile would tunnel straight through a ship between frames; the ray cannot.
 
-**The AI aims its nose at the lead solution and thrusters separately.** An
-earlier version blended "direction I want to travel" into "direction I want to
-point", which made ships fly backwards through their own dogfights. Steering
-now tracks the target while translation handles the orbit.
+**The AI separates gun tracking from maneuvering.** Steering tracks the lead
+solution while a velocity controller matches the opponent's movement and
+adjusts range with the ship's real thrusters. Predicted collisions or a close
+breakaway temporarily turn the hull along its escape route and hold fire.
+Threat checks run at the pilot's reaction rate, and dodges and retreats have
+cooldowns so they remain brief tactical moves.
 
-**Weapon recoil is tiny.** At the autocannon's ~9 shots/sec, a physically
-plausible recoil becomes a continuous shove that measurably pushes a ship out of
-its engagement band. The kick is mostly camera punch instead.
+**AI fire checks the actual shot path.** The active cannon supplies the origin
+for the intercept calculation. Pilots hold fire when the round cannot arrive
+within its lifetime, scenery blocks the lead path, or a teammate will cross
+the projectile corridor. Burst decisions use elapsed time, and the gun's own
+cooldown must allow a shot before that shot is counted against the burst.
+
+**The camera follows the rendered hull.** Physics interpolation smooths ships,
+rocks and rounds between simulation ticks. The chase camera carries the ship's
+translation and full rotation directly, with its follow offset stored in ship
+space. Q/E can roll continuously through any angle without a world-up correction
+or camera reversal. Only obstacle clearance eases; the cockpit stays attached
+to the hull. Respawns reset interpolation instead of streaking through the
+previous location.
+
+**Weapon recoil is tiny.** A shot applies a small velocity impulse and a gently
+damped camera movement of at most 3.5 cm. Firing does not shake the view sideways.
+Impact feedback stays on the child camera and cannot accumulate in the follow
+pose or change the player's firing direction.
+
+**Player guns help with lead near the sight.** A visible hostile's hull or lead
+point must be within 4 degrees of the clean camera axis, and the active cannon
+must reach the intercept within its 12-degree tracking cone. Assistance respects
+cover and teammates crossing the ballistic path. The brighter cyan sight shows
+when it is active; rounds do not home after launch. Cannons fire 20 rounds per
+second at 620 m/s, with 0.3-degree dispersion and 3 damage per round. Cooldown
+remainder is carried across physics steps to preserve the continuous cadence.
 
 **All audio is synthesised.** `sfx.gd` builds short PCM buffers at boot: the
-laser is a frequency sweep with noise, explosions layer noise with a sub-drop,
+autocannon report layers a short broadband muzzle crack, low body resonance and
+mechanical transients at the actual firing cadence; explosions layer noise with a sub-drop,
 and the engine is a looped drone whose volume and pitch track throttle and
 afterburner. Music and engine loops retain continuous boundaries; gain changes
 use elapsed time. World, cockpit and UI cues use separate voice pools with
@@ -308,10 +437,14 @@ first:
 - `ARENA_RADIUS` — how big the arena is
 - `SPEED_CRUISE` / `SPEED_BOOST` / `DRIFT_DAMPING` — flight feel
 - `AI_ENGAGE_BAND_MIN` / `AI_ENGAGE_BAND_MAX` — how close AI fights
+- `AI_TARGET_SWITCH_MARGIN` / `AI_TARGET_SCAN_INTERVAL` — lock stability and target reassessment
+- `AI_THREAT_LOOKAHEAD` / `AI_EVADE_COOLDOWN` — threat response and time between dodges
+- `AI_NAV_LOOKAHEAD` / `AI_VELOCITY_GAIN` — obstacle planning and pursuit response
+- `AI_RETREAT_DURATION` / `AI_RETREAT_COOLDOWN` — breakaway and return timing
 - `AI_SKILLS` in `game_settings.gd` — Cadet, Pilot and Ace competence
 - `ally_count` / `enemy_count` on `main.tscn` — team sizes
 
-The shared ship scene uses `ship_visual.gd` to build tapered hull sections and
-swept panels. Geometry is cached across ships and redeployments. Team paint
+The shared ship scene uses `ship_visual.gd` to build armored hull sections,
+drive housings, weapon assemblies and radiator banks. Geometry is cached across ships and redeployments. Team paint
 shares immutable materials, while animated engines and shields own their
 parameters. Asteroid collision hulls are built from their individual meshes.

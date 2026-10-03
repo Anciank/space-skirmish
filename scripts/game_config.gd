@@ -68,18 +68,21 @@ const COLLISION_DAMAGE := 2.6
 const COLLISION_MIN_SPEED := 12.0
 
 # ------------------------------------------------------------- weapons ----
-const FIRE_INTERVAL := 0.11
-const BOLT_SPEED := 320.0
-const BOLT_DAMAGE := 6.0
-const BOLT_LIFETIME := 1.7
+const FIRE_INTERVAL := 0.05
+const BOLT_SPEED := 620.0
+const BOLT_DAMAGE := 3.0
+const BOLT_LIFETIME := 1.4
 const BOLT_RADIUS := 0.18
-## Cone half-angle (degrees) the player's aim can wander.
-const WEAPON_SPREAD := 0.75
+## Standard deviation of the cannons' angular dispersion, in degrees.
+const WEAPON_SPREAD := 0.3
+## Assist needs a contact near the sight and a physically reachable gun angle.
+const PLAYER_AIM_CONE_DEG := 4.0
+const PLAYER_GUN_CONE_DEG := 12.0
 ## Muzzle velocity kick applied to the shooter, as a fraction of BOLT_SPEED per
-## shot. Deliberately tiny: at the autocannon's ~9 shots/sec anything larger
+## shot. Deliberately tiny: at the autocannon's 20 shots/sec anything larger
 ## becomes a continuous shove that measurably pushes the ship backwards, which
 ## is most of the reason a naive AI can never close on a target.
-const WEAPON_RECOIL := 0.00035
+const WEAPON_RECOIL := 0.000085
 const WEAPON_HEAT_PER_SHOT := 0.6
 
 # ------------------------------------------------------------------ AI ----
@@ -102,7 +105,15 @@ const AI_BURST_LEN := 0.85
 ## A pilot who breaks off comes back around after this long even if they are
 ## still hurt — hull never regenerates, so RETREAT has to be time-boxed.
 const AI_RETREAT_DURATION := 7.0
-const AI_DODGE_CHANCE := 0.42
+## Give a pilot time to fight again before another emergency breakaway.
+const AI_RETREAT_COOLDOWN := 10.0
+const AI_TARGET_SCAN_INTERVAL := 0.55
+## A new contact must be meaningfully better to interrupt the current fight.
+const AI_TARGET_SWITCH_MARGIN := 65.0
+const AI_THREAT_LOOKAHEAD := 0.85
+const AI_EVADE_COOLDOWN := 1.25
+const AI_NAV_LOOKAHEAD := 2.2
+const AI_VELOCITY_GAIN := 1.8
 ## Remaining hull percentage with shields depleted; full shields defer panic.
 const AI_PANIC_HULL := 34.0
 

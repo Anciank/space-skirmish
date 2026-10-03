@@ -16,6 +16,8 @@ func _ready() -> void:
 	GameSettings.reset_to_defaults(false)
 	_main = load("res://scenes/main.tscn").instantiate()
 	_main.start_in_menu = false
+	_main.ally_count = 2
+	_main.enemy_count = 3
 	add_child(_main)
 	_main.arena.process_mode = Node.PROCESS_MODE_DISABLED
 	for entry: Dictionary in _main._roster:
@@ -25,8 +27,10 @@ func _ready() -> void:
 	_steering()
 	_camera_stability()
 	_resources()
+	_visual_systems()
 	await _collision()
 	await _rock_surfaces()
+	_rock_respawns()
 	_containment()
 	_intercepts()
 	await _orphaned_bolts()
@@ -74,7 +78,7 @@ func _steering() -> void:
 		Input.parse_input_event(stick)
 		Input.flush_buffered_events()
 	_mouse(Vector2(100000, 100000), 1.0 / 60.0)
-	_check("extreme mouse input stays within valid angles", absf(_player.yaw) <= PI and absf(_player.pitch) <= deg_to_rad(89.0))
+	_check("extreme mouse input keeps full-turn angles and a finite hull", absf(_player.yaw) <= PI and absf(_player.pitch) <= PI and _pure_rotation(_player.global_basis))
 	_player.respawn_at(Vector3(80, 20, 40), Vector3.ZERO)
 	var direction := _player.forward()
 	_player._aim(1.0 / 60.0)
@@ -84,6 +88,120 @@ func _steering() -> void:
 	_player._aim(0.1)
 	Input.action_release("roll_right")
 	_check("roll wraps safely through a full turn", _player.roll < 0.0 and absf(_player.roll) <= PI)
+	for render_fps: int in [30, 60, 144]:
+		for pitch_direction: int in [-1, 1]:
+			_pitch_loops(render_fps, pitch_direction)
+	_local_control_axes()
+
+
+func _local_control_axes() -> void:
+	var attitudes: Array[Vector3] = [Vector3.ZERO,
+		Vector3(PI * 0.5, 0.7, 0.4), Vector3(-PI * 0.5, -0.4, -0.3),
+		Vector3(deg_to_rad(100.0), 0.8, deg_to_rad(60.0)),
+		Vector3(deg_to_rad(-170.0), -0.6, deg_to_rad(-100.0)),
+		Vector3(0.0, 0.6, PI)]
+	for index in attitudes.size():
+		var angles := attitudes[index]
+		var inverse := index % 2 == 1
+		GameSettings.set_value("invert_y", inverse, false)
+		GameSettings.set_value("invert_roll", inverse, false)
+		for control: String in ["mouse yaw", "mouse pitch", "Q", "E"]:
+			_set_control_attitude(angles)
+			var before := _player.global_basis
+			var expected_axis := Vector3.UP
+			if control == "mouse yaw":
+				_mouse(Vector2(-20, 0), 1.0 / 60.0)
+			elif control == "mouse pitch":
+				expected_axis = Vector3.RIGHT * (-1.0 if inverse else 1.0)
+				_mouse(Vector2(0, -20), 1.0 / 60.0)
+			else:
+				var key := KEY_Q if control == "Q" else KEY_E
+				var direction := -1.0 if control == "Q" else 1.0
+				expected_axis = Vector3.BACK * direction * (-1.0 if inverse else 1.0)
+				_physical_key(key, true)
+				_player._aim(1.0 / 60.0)
+				_physical_key(key, false)
+			var relative := (before.inverse() * _player.global_basis).get_rotation_quaternion()
+			var rotation_vector := Vector3(relative.x, relative.y, relative.z)
+			_check("%s follows the hull axis at attitude %d / inversion %s" % [control, index, inverse], rotation_vector.length() > 0.002 and rotation_vector.normalized().dot(expected_axis) > 0.999 and _pure_rotation(_player.global_basis))
+		_set_control_attitude(angles)
+		var before := _player.global_basis
+		_physical_key(KEY_E, true)
+		_mouse(Vector2(-12, -10), 1.0 / 60.0)
+		_physical_key(KEY_E, false)
+		var relative := (before.inverse() * _player.global_basis).get_rotation_quaternion()
+		var sign := -1.0 if inverse else 1.0
+		_check("combined mouse and physical E keep their local directions at attitude %d" % index, relative.x * sign > 0.002 and relative.y > 0.002 and relative.z * sign > 0.002 and _pure_rotation(_player.global_basis))
+	GameSettings.set_value("invert_y", false, false)
+	GameSettings.set_value("invert_roll", false, false)
+
+
+func _set_control_attitude(angles: Vector3) -> void:
+	_player.respawn_at(Vector3.ZERO, Vector3.FORWARD * 100.0)
+	_player.pitch = angles.x
+	_player.yaw = angles.y
+	_player.roll = angles.z
+	_player.global_basis = Basis.from_euler(angles)
+	_player.capture_mouse(true)
+
+
+func _physical_key(key: Key, pressed: bool) -> void:
+	var event := InputEventKey.new()
+	event.physical_keycode = key
+	event.keycode = key
+	event.pressed = pressed
+	Input.parse_input_event(event)
+	Input.flush_buffered_events()
+
+
+func _pitch_loops(render_fps: int, direction: int) -> void:
+	_player.respawn_at(Vector3.ZERO, Vector3.FORWARD * 100.0)
+	_player.capture_mouse(true)
+	var physics_delta := 1.0 / 60.0
+	var render_delta := 1.0 / render_fps
+	var angular_speed := deg_to_rad(120.0) * direction
+	var render_clock := 0.0
+	var command_turn := 0.0
+	var hull_turn := 0.0
+	var previous_pitch: float = _player.pitch
+	var previous_basis := _player.global_basis
+	var wraps := 0
+	var ticks := 0
+	var maximum_step := 0.0
+	var maximum_lag := 0.0
+	var forward_only := true
+	var rigid := true
+	# Ten seconds of real mouse deltas at independent render rates: the ship
+	# consumes accumulated events at sixty physics ticks, just as in flight.
+	for frame in render_fps * 10:
+		_queue_mouse(Vector2(0.0, -angular_speed * render_delta / _player.look_speed))
+		render_clock += render_delta
+		while render_clock + 0.0000001 >= physics_delta:
+			_player._aim(physics_delta)
+			render_clock -= physics_delta
+			ticks += 1
+			var pitch_now: float = _player.pitch
+			if absf(pitch_now - previous_pitch) > PI:
+				wraps += 1
+			command_turn += wrapf(pitch_now - previous_pitch, -PI, PI)
+			var basis_now := _player.global_basis
+			var relative := previous_basis.inverse() * basis_now
+			var step := atan2(relative.y.z, relative.y.y)
+			hull_turn += step
+			maximum_step = maxf(maximum_step, absf(step))
+			maximum_lag = maxf(maximum_lag, absf(command_turn - hull_turn))
+			forward_only = forward_only and step * direction >= -0.00001
+			rigid = rigid and _pure_rotation(basis_now) and basis_now.x.dot(Vector3.RIGHT) > 0.9999
+			previous_pitch = pitch_now
+			previous_basis = basis_now
+	var label := "%d render FPS / 60 physics TPS / pitch %s" % [render_fps, "up" if direction > 0 else "down"]
+	_check(label + " passes both poles and three complete turns", ticks == 600 and wraps >= 3 and absf(command_turn - angular_speed * 10.0) < 0.0005)
+	_check(label + " hull keeps turning without reversal or snap", forward_only and maximum_step < deg_to_rad(7.0) and maximum_lag < deg_to_rad(8.0))
+	_check(label + " keeps a finite rigid orientation", rigid)
+
+
+func _pure_rotation(value: Basis) -> bool:
+	return value.is_finite() and absf(value.determinant() - 1.0) < 0.00001 and absf(value.x.dot(value.y)) < 0.00001 and absf(value.y.dot(value.z)) < 0.00001 and absf(value.z.dot(value.x)) < 0.00001
 
 
 func _camera_stability() -> void:
@@ -100,6 +218,37 @@ func _camera_stability() -> void:
 	for _i in 240:
 		rig._process(1.0 / 120.0)
 	_check("camera settles on the nose after sustained recoil", (-rig.global_basis.z).dot(_player.forward()) > 0.999)
+
+
+func _visual_systems() -> void:
+	_player.reset_for_spawn()
+	var visual: ShipVisual = _player.model
+	visual.set_livery(GameConfig.team_color(GameConfig.TEAM_BLUE))
+	var blue_drive := (visual.get_node("EngineGlowLeft") as MeshInstance3D).material_override as StandardMaterial3D
+	var blue_tint := blue_drive.emission
+	visual.set_livery(GameConfig.team_color(GameConfig.TEAM_RED))
+	var red_drive := (visual.get_node("EngineGlowLeft") as MeshInstance3D).material_override as StandardMaterial3D
+	_check("changing squadron paint leaves drive plasma unchanged", blue_tint.is_equal_approx(red_drive.emission))
+	visual.set_livery(GameConfig.team_color(_player.team))
+	_player.cmd_right = 1.0
+	_player.cmd_up = 1.0
+	_player.throttle = -1.0
+	_player._update_visuals(0.2)
+	var exhaust_opposes_force := true
+	var active_ports := 0
+	for port: Node in visual.get_children():
+		if not String(port.name).begins_with("RCSJet") or not (port as MeshInstance3D).visible:
+			continue
+		active_ports += 1
+		exhaust_opposes_force = exhaust_opposes_force and (port as Node3D).basis.y.dot(Vector3(1, 1, 1)) < -0.9
+	_check("visible maneuver exhaust opposes the commanded force", active_ports == 8 and exhaust_opposes_force)
+	_check("reverse thrust does not light the forward drive", not (visual.get_node("BurnerLeft") as MeshInstance3D).visible)
+	_player.reset_for_spawn()
+	_player.boosting = true
+	_player._update_visuals(0.2)
+	_check("arming the booster at zero throttle produces no forward exhaust", not (visual.get_node("BurnerLeft") as MeshInstance3D).visible)
+	_player.reset_for_spawn()
+	_check("hull keeps its metal surface after a damage override clears", _player.hull_mesh.mesh.surface_get_material(0) is ShaderMaterial)
 
 
 func _resources() -> void:
@@ -199,6 +348,26 @@ func _collision() -> void:
 	await get_tree().physics_frame
 
 
+func _rock_respawns() -> void:
+	var rock: Asteroid = _main.arena.asteroids[0]
+	var anchor: StarBody = _main.arena.bodies[0]
+	var other: Asteroid = _main.arena.asteroids[1]
+	_check("rock respawn rejects live solids and pilots", not rock._spawn_is_clear(anchor.global_position) and not rock._spawn_is_clear(other.global_position) and not rock._spawn_is_clear(_player.global_position))
+	_check("rock respawn keeps its full silhouette inside the arena", not rock._spawn_is_clear(Vector3(GameConfig.ARENA_RADIUS - rock.radius, 0, 0)))
+	rock._revive()
+	_check("revived rock occupies a validated clear site", not rock.dead and rock.visible and rock._spawn_is_clear(rock.global_position))
+	# An anchor covering the arena exercises the failed-search path. Restore
+	# its tuning immediately; no mesh or permanent game balance is changed.
+	var original_radius := anchor.radius
+	anchor.radius = GameConfig.ARENA_RADIUS * 4.0
+	rock._revive()
+	_check("a crowded field delays revival without enabling collision", rock.dead and not rock.visible and rock.freeze and rock.collision_layer == 0 and rock.collision_mask == 0 and rock._respawn_timer > 0.0)
+	anchor.radius = original_radius
+	rock._revive()
+	_check("a delayed rock returns once a clear site becomes available", not rock.dead and rock.visible and rock.collision_layer == GameConfig.LAYER_ROCK)
+	rock.freeze = true
+
+
 func _containment() -> void:
 	for position: Vector3 in [Vector3(0, 950, 0), Vector3(920, 350, -100), Vector3(-950, -950, 0)]:
 		_player.global_position = position
@@ -251,10 +420,15 @@ func _orphaned_bolts() -> void:
 
 
 func _mouse(relative: Vector2, delta: float) -> void:
+	_queue_mouse(relative)
+	_player._aim(delta)
+
+
+func _queue_mouse(relative: Vector2) -> void:
 	var event := InputEventMouseMotion.new()
 	event.relative = relative
+	event.screen_relative = relative
 	_player._unhandled_input(event)
-	_player._aim(delta)
 
 
 func _check(caption: String, ok: bool) -> void:

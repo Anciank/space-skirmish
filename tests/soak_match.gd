@@ -13,6 +13,9 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_preferences = GameSettings.values.duplicate()
 	GameSettings.reset_to_defaults(false)
+	# Keep the full-round regression a focused three-versus-three battle.
+	GameSettings.set_value("ally_count", 2, false)
+	GameSettings.set_value("enemy_count", 3, false)
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--difficulty="):
 			GameSettings.set_value("difficulty", argument.get_slice("=", 1).to_int(), false)

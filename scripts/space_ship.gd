@@ -1,6 +1,6 @@
 class_name SpaceShip
 extends CharacterBody3D
-## Shared Newtonian flight model, damage model and laser autocannon.
+## Shared Newtonian flight model, damage model and kinetic autocannon.
 ##
 ## Ships are CharacterBody3Ds in FLOATING motion mode: no gravity, no floor
 ## logic, just `velocity` plus light drag, so you coast like you would in
@@ -77,9 +77,8 @@ var last_damage_cause := "HAZARD"
 var last_damage_dir := Vector3.FORWARD
 var last_damage_time := -999.0
 
-## Optional world-space point the guns should converge on. Left at zero for the
-## player (bolts fly straight down the nose); the AI sets it so its cannons
-## actually track a moving target instead of spraying wide.
+## Optional world-space convergence point, set by the player's sight or an AI
+## intercept solution. Zero leaves the cannons firing along their local axes.
 var aim_point := Vector3.ZERO
 
 var _shield_timer := 0.0
@@ -89,7 +88,7 @@ var _muzzle_index := 0
 var _gravity := Vector3.ZERO
 var _rng := RandomNumberGenerator.new()
 var _flash_cooldown := 0.0
-var _damage_material: StandardMaterial3D
+var _damage_material: ShaderMaterial
 
 @onready var model: ShipVisual = $ShipModel
 @onready var hull_mesh: MeshInstance3D = $ShipModel/HullBody
@@ -150,6 +149,10 @@ func respawn_at(position: Vector3, look_at_point: Vector3) -> void:
 		look_at(look_at_point, up)
 	velocity = Vector3.ZERO
 	reset_for_spawn()
+	# Teleports must start a fresh display history. Prime the camera/HUD's
+	# interpolated-pose pump before clearing the previous spawn position.
+	get_global_transform_interpolated()
+	reset_physics_interpolation()
 	respawned.emit()
 
 
@@ -172,7 +175,7 @@ func add_gravity(accel: Vector3) -> void:
 	_gravity += accel
 
 
-## Recolours paint + engine materials so a single scene serves both teams.
+## Applies squadron identification paint to the shared corvette.
 func apply_team_paint(color: Color) -> void:
 	model.set_livery(color)
 
@@ -391,7 +394,7 @@ func take_damage(amount: float, attacker: Node = null, world_pos := Vector3.ZERO
 				Sfx.play_local("impact", -8.0, _rng.randf_range(-1.0, 1.0))
 			else:
 				Sfx.play_at("impact", world_pos, -8.0, _rng.randf_range(-1.0, 1.0))
-		_flash_damage()
+		_flash_damage(world_pos)
 
 	if world_pos == Vector3.ZERO:
 		record_hit(global_position + forward() * 2.0)
@@ -434,27 +437,28 @@ func _emit_all() -> void:
 	boost_changed.emit(boost, boost_max)
 
 
-func _flash_damage() -> void:
+func _flash_damage(world_pos: Vector3) -> void:
 	if _flash_cooldown > 0.0 or hull_mesh == null:
 		return
 	_flash_cooldown = 0.12
 	if _damage_material == null:
-		_damage_material = StandardMaterial3D.new()
-		_damage_material.albedo_color = Color(1.0, 0.35, 0.3)
-		_damage_material.emission_enabled = true
-		_damage_material.emission = Color(1.0, 0.25, 0.15)
-		_damage_material.emission_energy_multiplier = 3.0
+		_damage_material = (hull_mesh.mesh.surface_get_material(0) as ShaderMaterial).duplicate()
+	var local_hit := model.to_local(world_pos) if world_pos != Vector3.ZERO else Vector3(0, 0, -2.5)
+	_damage_material.set_shader_parameter("impact_position", local_hit)
+	_damage_material.set_shader_parameter("impact_heat", 0.65)
 	hull_mesh.material_override = _damage_material
 
 
 # =============================================================== weapons ===
 
 func _update_weapon(delta: float) -> void:
-	_fire_timer = maxf(0.0, _fire_timer - delta)
+	# Carry one step's overshoot into the next shot so 20 Hz stays 20 Hz even
+	# at 30/120 physics ticks. An idle weapon clears that remainder next step.
+	_fire_timer = _fire_timer - delta if _fire_timer > 0.000001 else 0.0
 
 
 func can_fire() -> bool:
-	return not dead and _fire_timer <= 0.0
+	return not dead and _fire_timer <= 0.000001
 
 
 func fire(shots := 1) -> void:
@@ -462,9 +466,9 @@ func fire(shots := 1) -> void:
 		return
 	var fired := false
 	for _i in shots:
-		if _fire_timer > 0.0:
+		if _fire_timer > 0.000001:
 			break
-		_fire_timer = fire_interval
+		_fire_timer = maxf(_fire_timer, -fire_interval) + fire_interval
 		_spawn_bolt()
 		fired = true
 	if fired:
@@ -474,9 +478,9 @@ func fire(shots := 1) -> void:
 		recoil = minf(1.0, recoil + 0.55)
 		weapon_fired.emit()
 		if is_player:
-			Sfx.play_local("laser", -13.0, _rng.randf_range(-1.2, 1.2))
+			Sfx.play_local("laser", -7.0, _rng.randf_range(-0.25, 0.25))
 		else:
-			Sfx.play_at("laser", global_position, -13.0, _rng.randf_range(-1.2, 1.2))
+			Sfx.play_at("laser", global_position, -10.0, _rng.randf_range(-0.25, 0.25))
 
 
 func _spawn_bolt() -> void:
@@ -510,7 +514,7 @@ func _effects_parent() -> Node:
 # ============================================================== visuals ===
 
 func _update_visuals(delta: float) -> void:
-	model.update_motion(throttle, boosting, delta)
+	model.update_motion(throttle, boosting, delta, Vector2(cmd_right, cmd_up))
 
 
 ## Engine drone volume for the locally-controlled ship.

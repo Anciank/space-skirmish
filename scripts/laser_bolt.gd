@@ -1,6 +1,6 @@
 class_name LaserBolt
 extends Node3D
-## Laser autocannon projectile.
+## Autocannon projectile. The class name is kept for scene compatibility.
 ##
 ## Movement is a per-frame raycast from the previous position to the next one,
 ## so a fast bolt can never tunnel through a hull. On a hit it spawns an
@@ -10,43 +10,55 @@ extends Node3D
 ## below. That keeps a few hundred simultaneous bolts cheap.
 
 const HIT_MASK := GameConfig.WEAPON_MASK
+const TRACER_COLOR := Color("ffd4a0")
 
 var velocity := Vector3.ZERO
-var damage := 6.0
-var lifetime := 1.7
+var damage := GameConfig.BOLT_DAMAGE
+var lifetime := GameConfig.BOLT_LIFETIME
 var attacker: Node = null
-var bolt_color := Color(1.0, 0.62, 0.25)
+var bolt_color := TRACER_COLOR
 var radius := GameConfig.BOLT_RADIUS
 
 var _age := 0.0
 var _mesh: MeshInstance3D
 var _credit: Dictionary = {}
+var _ray_query := PhysicsRayQueryParameters3D.new()
+var _excluded_attacker := RID()
 
 
 func _ready() -> void:
+	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	add_to_group("bolts")
+	_ray_query.collision_mask = HIT_MASK
+	_ray_query.collide_with_areas = false
+	_ray_query.collide_with_bodies = true
 	_mesh = get_node_or_null("Tracer") as MeshInstance3D
 	if _mesh != null:
-		# Stretch the tracer along its flight axis.
-		_mesh.scale = Vector3(radius * 0.55, radius * 0.55, radius * 23.0)
+		# A thin incandescent trail behind the projectile, aligned to flight.
+		_mesh.scale = Vector3(radius * 0.24, radius * 15.0, radius * 0.24)
+		_mesh.position.z = radius * 7.5
 		_apply_look()
 
 
 ## Configures and launches the bolt. Call this immediately after adding the node
 ## to the tree — doing it in one place keeps the tracer material and its
 ## orientation in sync with the actual shot.
-func launch(origin: Vector3, direction: Vector3, shooter: Node, dmg: float, life: float, tint: Color) -> void:
+func launch(origin: Vector3, direction: Vector3, shooter: Node, dmg: float, life: float, _tint: Color) -> void:
 	attacker = shooter
 	if shooter is SpaceShip:
 		_credit = {"name": (shooter as SpaceShip).display_name, "team": (shooter as SpaceShip).team}
 	damage = dmg
 	lifetime = life
-	bolt_color = tint
+	# Ammo burns the same color on both teams; HUD markers identify allegiance.
+	bolt_color = TRACER_COLOR
 	velocity = direction
 	global_position = origin
 	_apply_look()
 	if _mesh != null:
-		_mesh.material_override = MeshFactory.make_bolt_material(tint)
+		_mesh.material_override = MeshFactory.make_bolt_material(bolt_color)
+	# The effect is inserted before its launch pose is known. Prevent a first
+	# rendered frame from interpolating out of the scene's default origin.
+	reset_physics_interpolation()
 
 
 func _apply_look() -> void:
@@ -68,12 +80,17 @@ func _physics_process(delta: float) -> void:
 
 	var from := global_position
 	var to := from + velocity * delta
-	var query := PhysicsRayQueryParameters3D.create(from, to, HIT_MASK)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
+	# Each round keeps its own query; the ray still runs on every physics tick.
+	# Reuse avoids thousands of temporary query objects in a large firefight.
+	_ray_query.from = from
+	_ray_query.to = to
+	var attacker_rid := RID()
 	if is_instance_valid(attacker) and attacker is CollisionObject3D:
-		query.exclude = [(attacker as CollisionObject3D).get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		attacker_rid = (attacker as CollisionObject3D).get_rid()
+	if attacker_rid != _excluded_attacker:
+		_ray_query.exclude = [attacker_rid] if attacker_rid.is_valid() else []
+		_excluded_attacker = attacker_rid
+	var hit := get_world_3d().direct_space_state.intersect_ray(_ray_query)
 
 	if hit.is_empty():
 		global_position = to
@@ -88,9 +105,11 @@ func _physics_process(delta: float) -> void:
 func _impact(point: Vector3, normal: Vector3, collider: Object) -> void:
 	if not collider is Asteroid:
 		var tint := bolt_color
+		var shielded := false
 		if collider is SpaceShip:
-			tint = Color("99ddff") if (collider as SpaceShip).shield > 0.0 else Color("ffc071")
-		_spawn_flash(point, normal, tint)
+			shielded = (collider as SpaceShip).shield > 0.0
+			tint = Color("91c8e2") if shielded else Color("ffd4a0")
+		_spawn_flash(point, normal, tint, shielded)
 	if collider != null and collider.has_method("take_damage"):
 		# A small kick along the shot so hits feel like they land.
 		var source: Node = attacker if is_instance_valid(attacker) else null
@@ -102,10 +121,11 @@ func _impact(point: Vector3, normal: Vector3, collider: Object) -> void:
 	queue_free()
 
 
-func _spawn_flash(point: Vector3, normal: Vector3, tint: Color) -> void:
+func _spawn_flash(point: Vector3, normal: Vector3, tint: Color, shielded := false) -> void:
 	var parent := get_parent()
 	if parent == null:
 		return
 	var spark := Spark.new()
+	spark.ejecta = not shielded
 	parent.add_child(spark)
 	spark.setup(point, normal, tint)

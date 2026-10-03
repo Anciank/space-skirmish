@@ -1,7 +1,8 @@
 shader_type spatial;
-render_mode specular_disabled;
 
-uniform vec3 base_color : source_color = vec3(0.42, 0.38, 0.32);
+// Seamless mineral strata in object coordinates. Matte silicate, carbon dust
+// and small exposed inclusions carry detail without emissive coloured patches.
+uniform vec3 base_color : source_color = vec3(0.29, 0.28, 0.26);
 uniform float body_radius = 1.0;
 uniform float seed_offset = 0.0;
 uniform int body_type = 0;
@@ -38,8 +39,8 @@ float crater(vec3 p) {
 				float d = length(f - corner) / r;
 				float bowl = smoothstep(0.0, 1.0, d) - 1.0;
 				float rim_distance = (d - 1.0) * 9.0;
-				float rim = exp(-rim_distance * rim_distance) * 0.28;
-				result += (bowl * 0.45 + rim) * smoothstep(0.24, 0.55, h);
+				float rim = exp(-rim_distance * rim_distance) * 0.24;
+				result += (bowl * 0.30 + rim) * smoothstep(0.24, 0.55, h);
 			}
 		}
 	}
@@ -47,29 +48,34 @@ float crater(vec3 p) {
 }
 
 void vertex() {
-	surface_position = VERTEX / body_radius;
+	surface_position = VERTEX / max(body_radius, 0.001);
 }
 
 void fragment() {
 	vec3 p = surface_position + vec3(seed_offset, seed_offset * 0.73, 0.0);
-	float continents = terrain(p * 4.0);
-	float detail = terrain(p * 32.0);
-	float grit = noise(p * 180.0);
-	vec3 color = base_color * (0.55 + continents * 0.85);
-	if (body_type == 0) {
-		color *= 0.7 + detail * 0.55 + grit * 0.2;
-		color = mix(color, color * vec3(0.65, 0.7, 0.75), smoothstep(0.61, 0.8, detail));
-	} else if (body_type == 1) {
-		float craters = crater(p * 9.0) + crater(p * 22.0) * 0.4;
-		color *= 0.8 + detail * 0.35 + grit * 0.1 + craters;
-		color *= mix(0.64, 1.0, smoothstep(0.34, 0.52, continents));
-	} else {
-		float bands = terrain(p * vec3(9.0, 26.0, 9.0) + detail * 0.7);
-		vec3 basalt = vec3(0.14, 0.16, 0.18);
-		vec3 sand = base_color * vec3(1.18, 1.04, 0.87);
-		color = mix(basalt, sand, smoothstep(0.3, 0.63, continents));
-		color *= 0.72 + bands * 0.4 + detail * 0.2 + grit * 0.1;
-	}
+	float strata = terrain(p * vec3(5.0, 13.0, 5.0));
+	float detail = terrain(p * 38.0);
+	float grit = noise(p * 160.0);
+	float pits = crater(p * (body_type == 0 ? 13.0 : 20.0));
+	float fracture = 1.0 - smoothstep(0.018, 0.065, abs(terrain(p * 19.0) - 0.47));
+	float minerals = smoothstep(0.62, 0.78, detail) * 0.32;
+	vec3 color = base_color * (0.62 + strata * 0.56 + detail * 0.23 + grit * 0.06);
+	color *= 1.0 - fracture * 0.31;
+	color = mix(color, vec3(0.39, 0.38, 0.35), minerals);
+	color *= 1.0 + pits * 0.60;
+
+	// Surface gradients add fine relief without relying on UV tangents. The
+	// large silhouette and collision hull remain the actual mesh geometry.
+	float height = (detail * 0.006 + pits * 0.009 - fracture * 0.001) * body_radius;
+	vec3 dpdx = dFdx(VERTEX);
+	vec3 dpdy = dFdy(VERTEX);
+	vec3 r1 = cross(dpdy, NORMAL);
+	vec3 r2 = cross(NORMAL, dpdx);
+	float det = dot(dpdx, r1);
+	vec3 gradient = sign(det) * (dFdx(height) * r1 + dFdy(height) * r2);
+	NORMAL = normalize(max(abs(det), 0.000001) * NORMAL - gradient * 0.36);
 	ALBEDO = color;
-	ROUGHNESS = 0.96;
+	ROUGHNESS = clamp(0.88 + grit * 0.11 - minerals * 0.14, 0.77, 1.0);
+	METALLIC = minerals * 0.12;
+	SPECULAR = 0.24;
 }

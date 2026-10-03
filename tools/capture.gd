@@ -33,7 +33,10 @@ func _ready() -> void:
 	_parse_args()
 	var packed: PackedScene = load("res://scenes/main.tscn")
 	_main = packed.instantiate()
+	_main.pause_on_focus_loss = false
 	_main.start_in_menu = false
+	_main.ally_count = 2
+	_main.enemy_count = 3
 	add_child(_main)
 	await get_tree().physics_frame
 	_rig = _main.rig
@@ -111,8 +114,9 @@ func _apply_roll() -> void:
 		_hold("roll_right", false)
 		_hold("roll_left", false)
 		return
-	_hold("roll_right", error > 0.0)
-	_hold("roll_left", error < 0.0)
+	var input_error := -error if bool(GameSettings.get_value("invert_roll")) else error
+	_hold("roll_right", input_error > 0.0)
+	_hold("roll_left", input_error < 0.0)
 
 
 ## Drives the ship through the real input map.

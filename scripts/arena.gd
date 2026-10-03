@@ -1,6 +1,6 @@
 extends Node3D
-## Builds and owns the play space: rock fields, small planets with gravity
-## wells, an orbiting moon, the enclosing boundary shell and the distant sun.
+## Builds a local debris field around dense, airless gravity anchors.
+## The real planet is a distant sky feature; local obstacles share ship scale.
 ##
 ## Everything is generated from `seed_value`, so a run is reproducible.
 
@@ -9,6 +9,7 @@ const STAR_BODY := preload("res://scripts/star_body.gd")
 const ASTEROID := preload("res://scenes/world/asteroid.tscn")
 
 const BOUNDARY_SHADER := preload("res://shaders/boundary.gdshader")
+const SUN_DIRECTION := Vector3(0.86, 0.32, -0.40)
 
 @export var seed_value := 20260101
 
@@ -37,6 +38,9 @@ func _ready() -> void:
 	_build_asteroids()
 	_build_bodies()
 	_configure_sun()
+	# Placement includes several clearance passes after children enter the tree.
+	# Their first rendered pose should already be the final, safe placement.
+	reset_physics_interpolation()
 
 
 # ------------------------------------------------------------ boundary ----
@@ -51,8 +55,7 @@ func _build_boundary() -> void:
 	_boundary_mat = ShaderMaterial.new()
 	_boundary_mat.shader = BOUNDARY_SHADER
 	_boundary_mat.set_shader_parameter("danger", 0.0)
-	_boundary_mat.set_shader_parameter("grid_density", 18.0)
-	_boundary_mat.set_shader_parameter("fade_distance", 340.0)
+	_boundary_mat.set_shader_parameter("fade_distance", GameConfig.ARENA_MARGIN)
 
 	_boundary = MeshInstance3D.new()
 	_boundary.name = "Boundary"
@@ -61,33 +64,6 @@ func _build_boundary() -> void:
 	_boundary.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_boundary.extra_cull_margin = 2000.0
 	add_child(_boundary)
-
-	# Three faint great-circle rings give the eye a sense of the sphere's shape
-	# even where the grid is thin. Very dim on purpose: at full brightness they
-	# read as bright wires strung across the play space.
-	var ring_mat := MeshFactory.make_glow_material(Color(0.22, 0.58, 0.98), 0.16)
-	ring_mat.albedo_color = Color(0.22, 0.58, 0.98, 0.22)
-	for axis: Vector3 in [Vector3.RIGHT, Vector3.UP, Vector3.FORWARD]:
-		var ring := ImmediateMesh.new()
-		ring.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
-		var helper := Vector3.UP if absf(axis.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
-		var u := axis.cross(helper).normalized()
-		var v := axis.cross(u).normalized()
-		var r := GameConfig.ARENA_RADIUS * 0.995
-		var steps := 200
-		for i in steps:
-			var t := TAU * float(i) / float(steps)
-			ring.surface_set_color(Color(0.22, 0.58, 0.98, 1.0))
-			ring.surface_add_vertex((u * cos(t) + v * sin(t)) * r)
-		ring.surface_end()
-		var mi := MeshInstance3D.new()
-		mi.name = "Ring"
-		mi.mesh = ring
-		mi.material_override = ring_mat
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		mi.extra_cull_margin = 2000.0
-		add_child(mi)
-
 
 # --------------------------------------------------------------- bodies ---
 
@@ -105,28 +81,29 @@ func _build_bodies() -> void:
 		dir.y *= 0.55
 
 		var body: StarBody = STAR_BODY.new()
-		body.name = "Body%d" % i
+		body.name = "GravityAnchor%d" % i
 		body.radius = radius
 		body.gravity_strength = 20.0 + radius * 0.45
 		body.well_radius = radius * 6.5
-		body.spin_speed = rng.randf_range(0.015, 0.06) * (1.0 if rng.randf() < 0.5 else -1.0)
+		body.spin_speed = rng.randf_range(0.004, 0.012) * (1.0 if rng.randf() < 0.5 else -1.0)
 		body.body_seed = rng.randi()
 		body.body_kind = 1 if rng.randf() < 0.7 else 0
 		root.add_child(body)
 		body.global_position = dir
 		bodies.append(body)
 
-		# Give roughly half of the bodies a moon on a tilted orbit.
+		# Companion rubble sits nearby. It has no toy moon orbit: visible orbital
+		# motion over a few seconds would imply an implausibly small solar system.
 		if rng.randf() < 0.6:
 			var moon: StarBody = STAR_BODY.new()
-			moon.name = "Moon%d" % i
+			moon.name = "CompanionRock%d" % i
 			moon.radius = radius * rng.randf_range(0.22, 0.34)
 			moon.gravity_strength = 0.0
 			moon.well_radius = 0.0
-			moon.spin_speed = rng.randf_range(0.05, 0.12)
+			moon.spin_speed = rng.randf_range(0.008, 0.025)
 			moon.body_seed = rng.randi()
 			moon.body_kind = 0
-			moon.orbit_speed = rng.randf_range(0.06, 0.16)
+			moon.orbit_speed = 0.0
 			moon.orbit_radius = radius * rng.randf_range(3.2, 4.6)
 			moon.orbit_center = dir
 			moon.orbit_tilt = rng.randf_range(-0.5, 0.5)
@@ -135,7 +112,7 @@ func _build_bodies() -> void:
 			bodies.append(moon)
 
 	# Bodies were placed after the rock field, so clear any rock that ended up
-	# inside a planet or moon.
+	# inside a gravity anchor or companion rock.
 	for a: Asteroid in asteroids:
 		_push_out_of_bodies(a, a.radius)
 
@@ -200,9 +177,10 @@ func _configure_sun() -> void:
 		_sun = DirectionalLight3D.new()
 		_sun.name = "Sun"
 		add_child(_sun)
-	_sun.rotation = Vector3(deg_to_rad(-38.0), deg_to_rad(41.0), 0.0)
-	_sun.light_color = Color(1.0, 0.95, 0.88)
-	_sun.light_energy = 1.8
+	# Light rays travel along -Z; the visible star lies in the opposite direction.
+	_sun.rotation = Basis.looking_at(-SUN_DIRECTION.normalized(), Vector3.UP).get_euler()
+	_sun.light_color = Color(1.0, 0.91, 0.76)
+	_sun.light_energy = 2.25
 	_sun.shadow_enabled = true
 	_sun.directional_shadow_max_distance = 900.0
 	_sun.shadow_bias = 0.04
@@ -213,9 +191,18 @@ func _configure_sun() -> void:
 		fill.name = "FillLight"
 		add_child(fill)
 	fill.rotation = Vector3(deg_to_rad(24.0), deg_to_rad(-135.0), 0.0)
-	fill.light_color = Color(0.42, 0.55, 1.0)
-	fill.light_energy = 0.5
+	fill.light_color = Color(0.45, 0.53, 0.61)
+	fill.light_energy = 0.12
 	fill.shadow_enabled = false
+	var world_environment := get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if world_environment != null and world_environment.environment != null:
+		var sky := world_environment.environment.sky
+		if sky != null and sky.sky_material is ShaderMaterial:
+			var sky_material := sky.sky_material as ShaderMaterial
+			sky_material.set_shader_parameter("compatibility_srgb", RenderingServer.get_current_rendering_method() == "gl_compatibility")
+			sky_material.set_shader_parameter("sun_direction", SUN_DIRECTION.normalized())
+			sky_material.set_shader_parameter("planet_direction", Starfield.PLANET_DIRECTION.normalized())
+			sky_material.set_shader_parameter("planet_angular_radius", Starfield.PLANET_ANGULAR_RADIUS)
 
 
 # --------------------------------------------------------------- runtime --
@@ -240,14 +227,21 @@ func _process(_delta: float) -> void:
 
 ## Safe spot to drop a ship: inside the playfield, away from rocks and bodies.
 func spawn_position(avoid: Array = [], min_ship_dist := 260.0) -> Vector3:
-	for _attempt in 220:
+	var best := Vector3.ZERO
+	var best_distance_squared := -1.0
+	var preferred_distance_squared := min_ship_dist * min_ship_dist
+	# A small squadron still gets the full requested separation. A large fleet
+	# can fill that shell, so search a wider safe shell instead of stacking
+	# every remaining pilot at one fixed fallback point.
+	for attempt in 1244:
 		var dir := Vector3(rng.randfn(0.0, 1.0), rng.randfn(0.0, 1.0), rng.randfn(0.0, 1.0))
 		if dir.length_squared() < 0.01:
 			continue
 		dir = dir.normalized()
 		dir.y *= 0.6
 		dir = dir.normalized()
-		var candidate := dir * rng.randf_range(GameConfig.ARENA_RADIUS * 0.35, GameConfig.ARENA_RADIUS * 0.72)
+		var outer_fraction := 0.72 if attempt < 220 else 0.84
+		var candidate := dir * rng.randf_range(GameConfig.ARENA_RADIUS * 0.35, GameConfig.ARENA_RADIUS * outer_fraction)
 
 		var ok := true
 		for body: StarBody in bodies:
@@ -264,10 +258,12 @@ func spawn_position(avoid: Array = [], min_ship_dist := 260.0) -> Vector3:
 				break
 		if not ok:
 			continue
+		var nearest_squared := INF
 		for other: Vector3 in avoid:
-			if candidate.distance_to(other) < min_ship_dist:
-				ok = false
-				break
-		if ok:
+			nearest_squared = minf(nearest_squared, candidate.distance_squared_to(other))
+		if nearest_squared >= preferred_distance_squared:
 			return candidate
-	return Vector3(0, 0, GameConfig.ARENA_RADIUS * 0.6)
+		if nearest_squared > best_distance_squared:
+			best_distance_squared = nearest_squared
+			best = candidate
+	return best

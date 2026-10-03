@@ -32,11 +32,16 @@ const KEY_BINDINGS := {
 var _failures := 0
 var _checks := 0
 var _main: Node3D
+var _preferences: Dictionary
 
 
 func _ready() -> void:
+	_preferences = GameSettings.values.duplicate(true)
+	GameSettings.reset_to_defaults(false)
 	_main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	_main.start_in_menu = false
+	_main.ally_count = 2
+	_main.enemy_count = 3
 	add_child(_main)
 	await get_tree().physics_frame
 	_run()
@@ -191,6 +196,7 @@ func _run() -> void:
 	await _release("thrust_forward", KEY_W)
 	await _release("boost", KEY_SHIFT)
 	_check("SHIFT engages the afterburner", boosted, "(%.0f m/s)" % boost_speed)
+	await _inverted_controls()
 
 	# ------------------------------------------------------------- pause ----
 	# Pause is handled in `_unhandled_input`, so it needs real frames to land.
@@ -217,8 +223,108 @@ func _run() -> void:
 	_main._show_title()
 	_main.queue_free()
 	await get_tree().process_frame
+	GameSettings.values = _preferences
+	GameSettings._apply()
 	await Sfx.finish_audio()
 	get_tree().quit(1 if _failures > 0 else 0)
+
+
+func _inverted_controls() -> void:
+	_section("physical roll keys and mouse inversion")
+	var p: SpaceShip = _main.player
+	var arena_mode: int = _main.arena.process_mode
+	var main_processing := _main.is_processing()
+	var collision_mask := p.collision_mask
+	var active_bots: Array[SpaceShip] = []
+	# Isolate the controls from gravity and combat while keeping the player's
+	# normal physics/input callback active. This fixture still uses real keys.
+	_main.arena.process_mode = Node.PROCESS_MODE_DISABLED
+	_main.set_process(false)
+	p.collision_mask = 0
+	for row: Dictionary in _main._roster:
+		var ship := row.ship as SpaceShip
+		if ship != p and ship.is_physics_processing():
+			active_bots.append(ship)
+			ship.set_physics_process(false)
+	for bolt: Node in get_tree().get_nodes_in_group("bolts"):
+		bolt.queue_free()
+	await _step(2)
+	for inverted: bool in [false, true]:
+		GameSettings.set_value("invert_roll", inverted, false)
+		for pair: Array in [["roll_left", KEY_Q, -1.0], ["roll_right", KEY_E, 1.0]]:
+			_control_pose(p)
+			await _press(pair[0], pair[1], 24)
+			var turned: float = p.roll
+			var hull_roll := p.global_basis.get_rotation_quaternion().z
+			await _release(pair[0], pair[1])
+			var expected: float = pair[2] * (-1.0 if inverted else 1.0)
+			_check("physical %s reverses only when roll inversion is %s" % ["Q" if pair[1] == KEY_Q else "E", inverted], turned * expected > 0.5 and hull_roll * expected > 0.2 and _rigid(p.global_basis))
+		_control_pose(p)
+		_key_down(KEY_Q)
+		_key_down(KEY_E)
+		Input.flush_buffered_events()
+		await _step(24)
+		_check("physical Q and E cancel with roll inversion %s" % inverted, absf(p.roll) < 0.00001 and p.global_basis.x.dot(Vector3.RIGHT) > 0.9999)
+		await _release("roll_left", KEY_Q)
+		await _release("roll_right", KEY_E)
+	# Changing the preference takes effect on a key already held down; it must
+	# not require releasing/repressing the key or produce a phantom input.
+	GameSettings.set_value("invert_roll", false, false)
+	_control_pose(p)
+	await _press("roll_right", KEY_E, 18)
+	var first: float = p.roll
+	var before_switch := p.global_basis
+	GameSettings.set_value("invert_roll", true, false)
+	await _step(18)
+	var reversed: float = wrapf(p.roll - first, -PI, PI)
+	var hull_reversed := (before_switch.inverse() * p.global_basis).get_rotation_quaternion().z
+	await _release("roll_right", KEY_E)
+	_check("a held physical E responds immediately to changed roll inversion", first > 0.5 and reversed < -0.5 and hull_reversed < -0.2)
+	for invert_pitch: bool in [false, true]:
+		for invert_roll: bool in [false, true]:
+			GameSettings.set_value("invert_y", invert_pitch, false)
+			GameSettings.set_value("invert_roll", invert_roll, false)
+			for mouse_direction: int in [-1, 1]:
+				_control_pose(p)
+				await _move_mouse(p, Vector2(0, mouse_direction * 120.0))
+				var expected_pitch := float(mouse_direction) * (1.0 if invert_pitch else -1.0)
+				_check("mouse pitch %s / invert Y %s / invert roll %s" % [mouse_direction, invert_pitch, invert_roll], p.pitch * expected_pitch > 0.2 and p.forward().y * expected_pitch > 0.2 and absf(p.yaw) < 0.00001 and absf(p.roll) < 0.00001)
+			_control_pose(p)
+			_key_down(KEY_E)
+			Input.flush_buffered_events()
+			await _move_mouse(p, Vector2(0, 120))
+			await _step(18)
+			var expected_pitch := 1.0 if invert_pitch else -1.0
+			var expected_roll := -1.0 if invert_roll else 1.0
+			_check("mixed physical E and mouse input keeps inversions independent %s/%s" % [invert_pitch, invert_roll], p.pitch * expected_pitch > 0.2 and p.forward().y * expected_pitch > 0.2 and p.roll * expected_roll > 0.5 and p.global_basis.get_rotation_quaternion().z * expected_roll > 0.2 and _rigid(p.global_basis))
+			await _release("roll_right", KEY_E)
+	GameSettings.set_value("invert_y", false, false)
+	GameSettings.set_value("invert_roll", false, false)
+	_control_pose(p)
+	p.collision_mask = collision_mask
+	_main.arena.process_mode = arena_mode
+	_main.set_process(main_processing)
+	for ship: SpaceShip in active_bots:
+		if is_instance_valid(ship):
+			ship.set_physics_process(true)
+
+
+func _control_pose(ship: SpaceShip) -> void:
+	ship.respawn_at(Vector3(0, 450, 0), Vector3(0, 450, -100))
+	ship.collision_mask = 0
+	ship.capture_mouse(true)
+
+
+func _key_down(keycode: Key) -> void:
+	var event := InputEventKey.new()
+	event.physical_keycode = keycode
+	event.keycode = keycode
+	event.pressed = true
+	Input.parse_input_event(event)
+
+
+func _rigid(value: Basis) -> bool:
+	return value.is_finite() and absf(value.determinant() - 1.0) < 0.00001
 
 
 ## Undoes anything the binding sweep changed: resume the tree, restore the chase

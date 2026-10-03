@@ -13,12 +13,16 @@ func _ready() -> void:
 		_out = OS.get_cmdline_user_args()[0]
 	DirAccess.make_dir_recursive_absolute(_out)
 	_main = load("res://scenes/main.tscn").instantiate()
+	_main.pause_on_focus_loss = false
 	_main.ally_count = 0
 	_main.enemy_count = 0
 	add_child(_main)
 	await _capture("title", 12)
-	_main._start_match()
+	_main._start_match(false)
 	GameMatch.running = false
+	# A material review must continue if another application takes focus.
+	_main.state = _main.State.TITLE
+	_main.set_process(false)
 	_player = _main.player
 	_player.set_physics_process(false)
 	_player.capture_mouse(false)
@@ -52,7 +56,7 @@ func _ready() -> void:
 	await _capture("explosion-fade", 30)
 	for body: StarBody in get_tree().get_nodes_in_group("bodies"):
 		_view(body.global_position, Vector3(1.6, 0.6, 2.1) * body.radius, 55)
-		await _capture("planet" if body.body_kind == 1 else "moon", 12)
+		await _capture("gravity-anchor" if body.body_kind == 1 else "companion-rock", 12)
 		if body.body_kind == 0:
 			break
 	var biggest: Asteroid = null
@@ -84,9 +88,11 @@ func _view(point: Vector3, offset: Vector3, fov: float) -> void:
 
 
 func _capture(caption: String, frames: int) -> void:
+	DisplayServer.window_move_to_foreground()
 	for _i in frames:
 		await get_tree().process_frame
-	await RenderingServer.frame_post_draw
+	# Force a complete frame even when macOS has occluded the tool window.
+	RenderingServer.force_draw(true)
 	var texture := get_viewport().get_texture().get_image()
 	var path := "%s/%s.png" % [_out, caption]
 	var error := texture.save_png(path)

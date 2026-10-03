@@ -1,12 +1,14 @@
 class_name Starfield
 extends Node3D
-## A few thousand emissive points baked into a single ArrayMesh, so the whole
+## Sparse astronomical point stars baked into a single ArrayMesh, so the whole
 ## star field costs one draw call. Parented to the camera rig so it never gets
 ## closer than the arena wall and effectively reads as infinitely far away.
 
-const COUNT := 2600
+const COUNT := 950
 const SHELL := 5200.0
 const STAR_SHADER := preload("res://shaders/soft_sprite.gdshader")
+const PLANET_DIRECTION := Vector3(-0.29, 0.16, -0.944)
+const PLANET_ANGULAR_RADIUS := 0.28
 
 @export var radius := SHELL
 @export var seed_value := 1337
@@ -34,14 +36,18 @@ func _mesh_points(rng: RandomNumberGenerator) -> void:
 		if dir.length_squared() < 0.02:
 			continue
 		dir = dir.normalized()
+		# These additive points are in front of the sky. Exclude the planetary
+		# disc so stars cannot shine through its opaque surface.
+		if dir.dot(PLANET_DIRECTION.normalized()) > cos(PLANET_ANGULAR_RADIUS + 0.003):
+			continue
 		var centre := dir * radius
 		# Brightness distribution: many faint, few blazing.
 		var mag := pow(rng.randf(), 3.2)
-		var size := lerpf(5.0, 21.0, mag)
+		var size := lerpf(1.8, 6.5, mag)
 		var warm := rng.randf()
 		var tint := Color(1.0, 1.0, 1.0).lerp(Color(1.0, 0.78, 0.58), warm * 0.7)
 		tint = tint.lerp(Color(0.72, 0.82, 1.0), clampf(rng.randf() - 0.55, 0.0, 0.45))
-		tint *= lerpf(0.35, 1.35, mag)
+		tint *= lerpf(0.38, 1.20, mag)
 		tint.a = 1.0
 
 		# Billboard the quad toward the arena centre — good enough at this scale.
@@ -63,8 +69,8 @@ func _mesh_points(rng: RandomNumberGenerator) -> void:
 	mat.set_shader_parameter("billboard", false)
 	mat.set_shader_parameter("use_vertex_color", true)
 	mat.set_shader_parameter("tint", Color.WHITE)
-	mat.set_shader_parameter("energy", 1.6)
-	mat.set_shader_parameter("rays", 0.1)
+	mat.set_shader_parameter("energy", 1.15)
+	mat.set_shader_parameter("rays", 0.0)
 	mesh.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()

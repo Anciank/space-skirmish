@@ -246,6 +246,7 @@ func _retreat_regressions() -> void:
 	_ai.shield_max = 50.0
 	_ai.hull = 70.0
 	_ai.state = AIShip.State.ENGAGE
+	_ai._retreat_cooldown = 0.0
 	_ai._think()
 	var stayed := _ai.state != AIShip.State.RETREAT
 	_ai.hull = 66.0

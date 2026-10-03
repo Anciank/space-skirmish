@@ -272,18 +272,51 @@ func _envelope(time: float, duration: float, attack: float, decay: float) -> flo
 
 
 func _make_laser(heavy := false) -> AudioStreamWAV:
-	var duration := 0.20 if heavy else 0.13
+	# Keep the established cue names while the weapons use physical ammunition.
+	# A short blast, receiver resonance and bolt clack overlap into a rotary-gun
+	# rasp at 20 rounds/second. No oscillator changes pitch through the shot.
+	var duration := 0.095 if heavy else 0.085
 	var out := PackedFloat32Array()
 	out.resize(int(MIX_RATE * duration))
-	var phase := 0.0
-	var noise := 0.0
+	var envelopes := PackedFloat32Array()
+	envelopes.resize(out.size())
+	var broad_noise := 0.0
+	var body_noise := 0.0
+	var mechanical_noise := 0.0
+	var total := 0.0
+	var envelope_total := 0.0
+	var weight := 0.82 if heavy else 1.0
 	for i in out.size():
 		var time := float(i) / MIX_RATE
-		var progress := time / duration
-		var frequency := lerpf(1150.0 if heavy else 1500.0, 200.0 if heavy else 420.0, pow(progress, 0.45))
-		phase += TAU * frequency / MIX_RATE
-		noise = lerpf(noise, _rng.randf_range(-1.0, 1.0), 0.3)
-		out[i] = (sin(phase) * 0.65 + sin(phase * 2.0) * 0.12 + noise * 0.22) * _envelope(time, duration, 0.002, 24.0) * 0.85
+		var raw := _rng.randf_range(-1.0, 1.0)
+		# Roll off the top of the noise instead of adding aliased hard impulses.
+		broad_noise = lerpf(broad_noise, raw, 0.72)
+		body_noise = lerpf(body_noise, raw, 0.095)
+		mechanical_noise = lerpf(mechanical_noise, raw, 0.35)
+		var attack := smoothstep(0.0, 0.0008, time)
+		var tail := smoothstep(0.0, 0.012, duration - time)
+		var envelope := attack * tail
+		var blast := (broad_noise * 0.94 + body_noise * 0.65) * exp(-time * 150.0)
+		var receiver := sin(TAU * 118.0 * weight * time) * 0.24
+		receiver += sin(TAU * 193.0 * weight * time) * 0.12
+		receiver += sin(TAU * 327.0 * weight * time) * 0.055
+		receiver = (receiver + body_noise * 0.32) * exp(-time * 48.0)
+		var mechanism := 0.0
+		for onset: float in [0.014, 0.032]:
+			var local := time - onset
+			if local >= 0.0:
+				var clack := (broad_noise - mechanical_noise) * 0.23
+				clack += sin(TAU * 1760.0 * local) * 0.045
+				clack += sin(TAU * 2890.0 * local) * 0.025
+				mechanism += clack * smoothstep(0.0, 0.0006, local) * exp(-local * 210.0)
+		out[i] = (blast + receiver + mechanism) * envelope
+		envelopes[i] = envelope
+		total += out[i]
+		envelope_total += envelope
+	# Remove the clip's mean without turning its silent endpoints into steps.
+	var dc := total / maxf(envelope_total, 0.001)
+	for i in out.size():
+		out[i] -= dc * envelopes[i]
 	return _make_wav(out)
 
 

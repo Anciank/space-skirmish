@@ -21,9 +21,9 @@ void vertex() {
 void fragment() {
 	vec2 p = UV * 2.0 - 1.0;
 	float radius = length(p);
-	float halo = exp(-radius * radius * 7.0) * (1.0 - smoothstep(0.7, 1.0, radius));
-	float core = exp(-radius * radius * 65.0);
-	float star = (exp(-abs(p.x) * 65.0) + exp(-abs(p.y) * 65.0)) * pow(max(1.0 - radius, 0.0), 3.0);
+	float halo = exp(-radius * radius * 12.0) * (1.0 - smoothstep(0.65, 1.0, radius));
+	float core = exp(-radius * radius * 85.0);
+	float star = (exp(-abs(p.x) * 90.0) + exp(-abs(p.y) * 90.0)) * pow(max(1.0 - radius, 0.0), 5.0);
 	vec4 vertex_tint = use_vertex_color ? COLOR : vec4(1.0);
 	ALBEDO = mix(tint.rgb, vec3(1.0), core * 0.7) * energy * vertex_tint.rgb;
 	ALPHA = clamp(halo + core * 0.4 + star * rays, 0.0, 1.0) * tint.a * opacity * vertex_tint.a;

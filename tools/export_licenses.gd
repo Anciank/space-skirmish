@@ -26,6 +26,8 @@ func _ready() -> void:
 		notices += "\n=== License: %s ===\n%s\n" % [name, licenses[name]]
 	var ok := _write(output.path_join("GODOT_LICENSE.txt"), Engine.get_license_text())
 	ok = _write(output.path_join("GODOT_COMPONENTS.txt"), notices) and ok
+	for path: String in L10n.FONT_NOTICES:
+		ok = _write(output.path_join(path.get_file()), FileAccess.get_file_as_string(path)) and ok
 	await Sfx.finish_audio()
 	get_tree().quit(0 if ok else 1)
 

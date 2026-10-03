@@ -9,6 +9,7 @@ extends RefCounted
 const SPHERE_SEGMENTS := 24
 const SPHERE_RINGS := 14
 const ROCK_SHADER := preload("res://shaders/rock_surface.gdshader")
+static var _bolt_material: StandardMaterial3D
 
 
 ## `shape` picks the noise profile:
@@ -87,17 +88,22 @@ static func make_rock_material(base: Color, seed_value: int, radius := 1.0, shap
 	return mat
 
 
-## Emissive tracer bolt material. `tint` is the team colour.
-static func make_bolt_material(tint: Color) -> StandardMaterial3D:
+## Incandescent kinetic tracer. Ammunition has the same finish for both teams.
+static func make_bolt_material(_tint: Color) -> StandardMaterial3D:
+	# Hundreds of live rounds use this same immutable finish. Sharing it
+	# avoids allocating and uploading a new material for every shot.
+	if _bolt_material != null:
+		return _bolt_material
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	mat.albedo_color = Color(tint.r, tint.g, tint.b, 1.0)
+	mat.albedo_color = Color("ffd4a0")
 	mat.emission_enabled = true
-	mat.emission = tint
-	mat.emission_energy_multiplier = 2.5
+	mat.emission = Color("ffd4a0")
+	mat.emission_energy_multiplier = 2.0
 	mat.disable_receive_shadows = true
+	_bolt_material = mat
 	return mat
 
 

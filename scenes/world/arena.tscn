@@ -6,12 +6,14 @@
 [sub_resource type="ShaderMaterial" id="MatSky"]
 shader = ExtResource("2_sky")
 shader_parameter/ambient_boost = 1.0
-shader_parameter/nebula_color_a = Color(0.36, 0.18, 0.66, 1)
-shader_parameter/nebula_color_b = Color(0.06, 0.32, 0.66, 1)
-shader_parameter/nebula_amount = 0.55
-shader_parameter/sun_direction = Vector3(0.42, 0.28, 0.86)
-shader_parameter/sun_color = Color(1, 0.93, 0.8, 1)
+shader_parameter/nebula_color_a = Color(0.22, 0.185, 0.145, 1)
+shader_parameter/nebula_color_b = Color(0.11, 0.16, 0.20, 1)
+shader_parameter/nebula_amount = 0.6
+shader_parameter/sun_direction = Vector3(0.86, 0.32, -0.4)
+shader_parameter/sun_color = Color(1, 0.91, 0.76, 1)
 shader_parameter/sun_disc = 0.25
+shader_parameter/planet_direction = Vector3(-0.29, 0.16, -0.944)
+shader_parameter/planet_angular_radius = 0.28
 
 [sub_resource type="Sky" id="SkySpace"]
 sky_material = SubResource("MatSky")
@@ -22,22 +24,22 @@ radiance_size = 3
 background_mode = 2
 sky = SubResource("SkySpace")
 ambient_light_source = 2
-ambient_light_color = Color(0.38, 0.46, 0.6, 1)
+ambient_light_color = Color(0.34, 0.39, 0.44, 1)
 ambient_light_sky_contribution = 0.0
-ambient_light_energy = 0.55
+ambient_light_energy = 0.22
 tonemap_mode = 3
 tonemap_exposure = 1.0
 glow_enabled = true
 glow_normalized = false
-glow_intensity = 0.55
-glow_strength = 0.75
+glow_intensity = 0.28
+glow_strength = 0.55
 glow_bloom = 0.0
 glow_blend_mode = 1
 glow_hdr_threshold = 1.4
 adjustment_enabled = true
 adjustment_brightness = 1.0
-adjustment_contrast = 1.04
-adjustment_saturation = 1.0
+adjustment_contrast = 1.0
+adjustment_saturation = 0.86
 
 [node name="Arena" type="Node3D"]
 script = ExtResource("1_arena")
@@ -46,12 +48,12 @@ script = ExtResource("1_arena")
 environment = SubResource("EnvSpace")
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.754, -0.516, 0.407, 0, 0.619, 0.785, -0.657, -0.592, 0.467, 0, 0, 0)
-light_color = Color(1, 0.95, 0.88, 1)
-light_energy = 1.35
+light_color = Color(1, 0.91, 0.76, 1)
+light_energy = 2.25
 shadow_enabled = true
 directional_shadow_max_distance = 900.0
 
 [node name="FillLight" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.707, -0.454, -0.542, 0, 0.766, -0.643, 0.707, -0.455, 0.542, 0, 0, 0)
-light_color = Color(0.42, 0.55, 1, 1)
-light_energy = 0.45
+light_color = Color(0.45, 0.53, 0.61, 1)
+light_energy = 0.12

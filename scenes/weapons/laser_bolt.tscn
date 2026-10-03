@@ -5,17 +5,21 @@
 
 [ext_resource type="Script" path="res://scripts/laser_bolt.gd" id="1_bolt"]
 
-[sub_resource type="BoxMesh" id="MeshTracer"]
-size = Vector3(1, 1, 1)
+[sub_resource type="CylinderMesh" id="MeshTracer"]
+top_radius = 0.5
+bottom_radius = 0.5
+height = 1.0
+radial_segments = 6
+rings = 1
 
 [sub_resource type="StandardMaterial3D" id="MatTracer"]
 shading_mode = 0
 transparency = 1
 blend_mode = 1
-albedo_color = Color(1, 0.7, 0.3, 1)
+albedo_color = Color(1, 0.831, 0.627, 1)
 emission_enabled = true
-emission = Color(1, 0.65, 0.25, 1)
-emission_energy_multiplier = 7.0
+emission = Color(1, 0.831, 0.627, 1)
+emission_energy_multiplier = 2.0
 
 [node name="LaserBolt" type="Node3D"]
 collision_layer = 4
@@ -23,6 +27,7 @@ collision_mask = 11
 script = ExtResource("1_bolt")
 
 [node name="Tracer" type="MeshInstance3D" parent="."]
+rotation = Vector3(1.5707963, 0, 0)
 cast_shadow = 0
 material_override = SubResource("MatTracer")
 mesh = SubResource("MeshTracer")
